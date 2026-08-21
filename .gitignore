@@ -1,0 +1,20 @@
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+.env
+.env.local
+.env.*.local
+
+
+
+# Local PHI file storage (never commit uploaded lab results)
+storage/
+!storage/.gitkeep
+
+.DS_Store
+*.log
+.pnpm-debug.log*
+.pnpm-store*
