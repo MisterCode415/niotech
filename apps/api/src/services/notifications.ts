@@ -1,6 +1,6 @@
 import nodemailer from 'nodemailer';
 import { eq } from 'drizzle-orm';
-import { env } from '../env.js';
+import { env, smtpIsLocalCapture } from '../env.js';
 import { withTenant } from '../db/client.js';
 import { notifications } from '../db/schema.js';
 
@@ -15,11 +15,19 @@ export interface NotificationIntent {
   orderId?: string;
 }
 
+/**
+ * Local capture (Mailpit) speaks plain SMTP with no credentials. Anything else is a relay reached
+ * over a network, where the connection carries both a password and patient-identifying subject
+ * lines, so TLS is required rather than merely attempted.
+ */
 const transport = nodemailer.createTransport({
   host: env.SMTP_HOST,
   port: env.SMTP_PORT,
-  secure: false,
-  ignoreTLS: true,
+  // Port 465 is implicit TLS; 587 and 25 start in the clear and upgrade with STARTTLS.
+  secure: env.SMTP_PORT === 465,
+  ignoreTLS: smtpIsLocalCapture,
+  requireTLS: !smtpIsLocalCapture,
+  auth: env.SMTP_USER ? { user: env.SMTP_USER, pass: env.SMTP_PASS } : undefined,
 });
 
 /**

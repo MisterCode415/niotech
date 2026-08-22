@@ -1,0 +1,30 @@
+# Optional overlay that runs PostgreSQL alongside the application instead of using a managed
+# instance. Cheaper and simpler, but backups become entirely your responsibility.
+#
+# Enable by setting BUNDLED_DB=true in .env.production; deploy.sh then adds this file.
+# DATABASE_URL must use the service name as the host: postgres://user:pass@postgres:5432/nio
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-nio}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?BUNDLED_DB=true requires POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-nio}
+    # Deliberately no published ports: reachable only from the compose network.
+    # For admin access use `docker compose exec postgres psql`.
+    volumes:
+      - nio-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-nio} -d ${POSTGRES_DB:-nio}']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  nio-pgdata:

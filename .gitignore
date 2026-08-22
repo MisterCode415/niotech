@@ -13,6 +13,7 @@ coverage/
 deploy/certs/
 deploy/letsencrypt/
 deploy/allowlist.conf
+deploy/.azure-secrets*
 
 # Local PHI file storage (never commit uploaded lab results)
 storage/

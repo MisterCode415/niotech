@@ -2,24 +2,11 @@
 # stack in docker-compose.yml, which otherwise shares this directory's name and its volumes.
 name: nio-prod
 
+# The database is expected to be a managed instance reached over a private network, so no
+# postgres service is defined here. To run one alongside the app instead, add the overlay:
+#   docker compose -f docker-compose.prod.yml -f docker-compose.bundled-db.yml ...
+# which deploy.sh does automatically when BUNDLED_DB=true.
 services:
-  postgres:
-    image: postgres:17-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-nio}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.production}
-      POSTGRES_DB: ${POSTGRES_DB:-nio}
-    # Deliberately no published ports: the database is reachable only from the compose network.
-    # Use `docker compose exec postgres psql` or an SSH tunnel for admin access.
-    volumes:
-      - nio-pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-nio} -d ${POSTGRES_DB:-nio}']
-      interval: 5s
-      timeout: 5s
-      retries: 20
-
   api:
     build:
       context: .
@@ -33,9 +20,6 @@ services:
       STORAGE_LOCAL_PATH: /data/storage
     volumes:
       - nio-storage:/data/storage
-    depends_on:
-      postgres:
-        condition: service_healthy
     # No published ports either; nginx reaches it over the compose network.
 
   web:
@@ -74,6 +58,5 @@ services:
     entrypoint: ['certbot']
 
 volumes:
-  nio-pgdata:
   nio-storage:
   nio-certbot-webroot:

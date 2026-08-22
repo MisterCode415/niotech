@@ -167,9 +167,25 @@ scratch work.
 
 ## Deploying
 
-The production stack is three containers behind nginx: the SPA is served as static files, `/api` is
-proxied to Fastify, and Postgres and the PHI volume are reachable only from inside the compose
-network. Neither the database nor the API publishes a host port.
+The target is a single Ubuntu VM running two containers — nginx serving the built SPA and proxying
+`/api` to Fastify — with PostgreSQL as a managed instance on a private network. The API publishes no
+host port, and the database has no public endpoint at all.
+
+```
+        internet
+           │  443 (your IP only)          80 (open, ACME challenges only)
+           ▼
+   ┌───────────────┐        ┌───────────────────────────────┐
+   │ nginx (web)   │──/api──▶│ Fastify (api) + PHI volume    │
+   │ static SPA    │        └───────────────┬───────────────┘
+   └───────────────┘                        │ private VNet, TLS
+                                            ▼
+                              PostgreSQL Flexible Server
+```
+
+Azure is assumed below because Microsoft signs a HIPAA BAA covering VMs, PostgreSQL Flexible Server
+and Blob Storage. Nothing here is Azure-specific except `deploy/azure-provision.sh` — the stack is
+plain Docker Compose and runs on any Ubuntu host.
 
 ### Before the first deploy
 
@@ -183,18 +199,39 @@ HTTP basic auth is deliberately *not* used as the gate. The SPA sends `Authoriza
 every API call, which replaces the browser's `Authorization: Basic` header, so nginx would reject
 every request. An IP allowlist has no such conflict and covers the API as well as the SPA.
 
+### Provisioning Azure
+
+`deploy/azure-provision.sh` creates everything: resource group, VNet with an app subnet and a
+delegated database subnet, an NSG, the VM, and a private Flexible Server. It is re-runnable — each
+step is skipped if the resource already exists — and it prints the connection string when done.
+
+```bash
+az login
+ADMIN_CIDR=203.0.113.42/32 ./deploy/azure-provision.sh
+```
+
+| Resource | Default | Override with |
+| --- | --- | --- |
+| VM | `Standard_B2s`, Ubuntu 24.04, 64 GiB | `VM_SIZE`, `OS_DISK_GB` |
+| Database | Flexible Server Burstable `Standard_B1ms`, 32 GiB, v17 | `PG_SKU`, `PG_STORAGE_GB`, `PG_VERSION` |
+| Location | `eastus` | `LOCATION` |
+| Names | prefixed `nio-` | `PREFIX` |
+
+The VM is built from `deploy/cloud-init.yaml`, which installs Docker, enables `ufw`, and adds 2GB of
+swap — the web image build runs `tsc` plus Vite and wants roughly 2GB, which is uncomfortably close
+to a 4GB VM's limit without it.
+
 ### On the server
 
 ```bash
-sudo apt update && sudo apt install -y docker.io docker-compose-v2 git
 git clone <your-repo> nio-platform && cd nio-platform
 
 cp .env.production.example .env.production
 cp deploy/allowlist.conf.example deploy/allowlist.conf
 
-# Fill in .env.production: hostname, and a fresh secret for each value marked replace-me.
+# Fill in .env.production: hostname, the DATABASE_URL printed by the provisioning script,
+# and a fresh secret for each value marked replace-me.
 openssl rand -base64 48   # DEV_AUTH_SECRET
-openssl rand -hex 24      # POSTGRES_PASSWORD (also goes in DATABASE_URL)
 
 # Put your own address in the allowlist, or nothing will be reachable.
 curl -s https://ifconfig.me
@@ -203,14 +240,25 @@ curl -s https://ifconfig.me
 ./deploy/certs.sh      # replaces the self-signed placeholder with Let's Encrypt
 ```
 
-Point the DNS A record at the server and open only 80 and 443:
-
-```bash
-sudo ufw allow OpenSSH && sudo ufw allow 80,443/tcp && sudo ufw enable
-```
+Point the DNS A record at the VM's public IP first, or certificate issuance will fail.
 
 Then sign in as `PLATFORM_ADMIN_EMAIL` and create the first business unit. Redeploying a change is
 `git pull && ./deploy/deploy.sh`.
+
+### Why port 80 is open to everyone
+
+The NSG restricts 443 and 22 to your address but leaves 80 open. That is deliberate: Let's Encrypt
+has to reach port 80 to validate on every renewal, and the alternative is widening a firewall rule
+on a schedule, which eventually gets forgotten in the open position. It is safe because the nginx
+server block on port 80 contains only the ACME challenge location and a redirect to HTTPS — no
+application content and no API routes are reachable there. The IP allowlist lives in the 443 block.
+
+### Running PostgreSQL on the VM instead
+
+Set `BUNDLED_DB=true` in `.env.production`, point `DATABASE_URL` at `postgres:5432`, and set
+`POSTGRES_PASSWORD`. `deploy.sh` then adds `docker-compose.bundled-db.yml`, which runs Postgres as a
+container with no published port. Cheaper, one less moving part, and backups become entirely your
+problem — the managed instance is recommended mainly because it does point-in-time restore for you.
 
 Renew certificates from cron, since Let's Encrypt certificates last 90 days:
 
@@ -220,42 +268,95 @@ Renew certificates from cron, since Let's Encrypt certificates last 90 days:
 
 ### Configuration that bites
 
+- **Flexible Server private access cannot be enabled after creation.** A public-access server has to
+  be rebuilt to move it into a VNet, so choose private at creation time. The provisioning script
+  does.
 - `WEB_ORIGIN` is stamped into QR stickers and emailed links. If it is wrong, every kit you print
   points somewhere useless — and stickers are already on physical boxes by the time you notice. The
   API refuses to start if it still says localhost.
-- `DATABASE_URL` must use the compose service name (`postgres:5432`), not `localhost:5433`.
-- `POSTGRES_PASSWORD` only takes effect when the data volume is first created. Changing it later
-  does nothing until the volume is recreated.
+- `DATABASE_URL` needs `?sslmode=require` for any remote host. The API refuses to start without it,
+  because PHI would otherwise cross the network in clear text. Hosts that never leave the machine
+  (`localhost`, the `postgres` compose service) are exempt.
+- `POSTGRES_PASSWORD` only takes effect when the data volume is first created, and only applies to
+  the bundled-database setup. Changing it later does nothing until the volume is recreated.
 - The production stack uses its own compose project name (`nio-prod`), so `pnpm db:up` and
   `pnpm db:reset` cannot touch production containers or volumes.
 
 ### Email
 
-`SMTP_HOST` should point at a real relay. To inspect notifications instead of delivering them, run
-with `--profile mailpit` and set `SMTP_HOST=mailpit`; the UI binds to loopback only, so reach it
-over SSH rather than exposing it:
+Nothing in `azure-provision.sh` creates a mail service — outbound email needs a relay you sign up
+for separately. Three constraints shape the choice:
+
+- Azure blocks outbound port **25** from VMs entirely, so the relay must accept **587**.
+- The connection carries a password and patient-identifying subject lines, so TLS is mandatory.
+  `requireTLS` is set for any non-local host, which means the send *fails* rather than silently
+  falling back to plaintext.
+- `SMTP_FROM` must be an address the relay has verified, or it will reject every message.
+
+**Azure Communication Services** keeps mail inside the BAA boundary. `deploy/azure-email.sh`
+provisions all of it and prints the settings to paste into `.env.production`:
+
+```bash
+./deploy/azure-email.sh
+```
+
+It creates an Email Communication Service with an Azure-managed domain (verified instantly, no DNS
+records), a Communication Services resource with that domain linked, and an Entra application whose
+client secret becomes the SMTP password. ACS authenticates SMTP against an Entra app rather than a
+plain password, which is why the app exists at all.
+
+Two things about that setup are easy to get wrong by hand. The role assignment must be scoped to the
+**Communication Services resource itself** — granting it on the resource group, the subscription, or
+the Email Communication Service silently fails to authenticate. And the SMTP username is a named
+resource you create, not a derived string; the older `<acs>|<app-id>|<tenant-id>` form still works
+but runs past 90 characters. The script does both correctly.
+
+Azure-managed domains are rate limited, meant for testing, and their sender address is fixed at
+`donotreply@<guid>.azurecomm.net`. For a real sender you need a custom domain
+(`--domain-management CustomerManaged`) and its SPF and DKIM records published. New Communication
+Services resources also start with a low sending quota that needs a support request to raise.
+
+**SendGrid** is the quicker path if BAA coverage is not yet a concern — create an API key and use
+`smtp.sendgrid.net` with `SMTP_USER=apikey` and the key as `SMTP_PASS`.
+
+To inspect notifications instead of delivering them, run with `--profile mailpit` and set
+`SMTP_HOST=mailpit`. The UI binds to loopback only, so reach it over SSH rather than exposing it:
 
 ```bash
 ssh -L 8025:127.0.0.1:8025 user@server   # then open http://localhost:8025
 ```
 
+Email failures never block a clinical transition — a result is recorded whether or not the mail
+server is reachable, and the in-app notification lands regardless. That makes a broken relay quiet,
+so the API logs a warning at startup when a remote relay has no credentials configured.
+
 ### Backups
 
-Two things hold state and both matter: the Postgres volume and the PHI volume holding uploaded lab
-results. Neither is backed up automatically.
+Two things hold state. Flexible Server backs up the database itself with 7-day point-in-time
+restore, so the gap is **the PHI volume holding uploaded lab results**, which nothing backs up:
 
 ```bash
-docker compose -f docker-compose.prod.yml --env-file .env.production \
-  exec -T postgres pg_dump -U nio nio | gzip > nio-$(date +%F).sql.gz
 docker run --rm -v nio-prod_nio-storage:/data -v "$PWD":/out alpine \
   tar czf /out/nio-storage-$(date +%F).tar.gz -C /data .
 ```
 
+With `BUNDLED_DB=true` the database is your responsibility too:
+
+```bash
+docker compose -f docker-compose.prod.yml -f docker-compose.bundled-db.yml \
+  --env-file .env.production exec -T postgres pg_dump -U nio nio | gzip > nio-$(date +%F).sql.gz
+```
+
+A backup you have never restored is a hypothesis, not a backup. Restore one into a scratch database
+before you rely on it.
+
 ### Still missing for real production
 
-This is a private test deployment, not a HIPAA-ready one. Before real patient data: replace dev auth
-with Auth0, encrypt PHI at rest, add audit log retention and offsite backups, sanitize the marketing
-page HTML, and put a real payment provider behind `PaymentProvider`.
+This is a private test deployment, not a HIPAA-ready one. Azure signing a BAA covers the
+infrastructure; it says nothing about how this application is configured. Before real patient data:
+replace dev auth with Auth0, encrypt PHI at rest with a customer-managed key, add audit log
+retention and offsite backups, confirm no PHI reaches application logs, sanitize the marketing page
+HTML, and put a real payment provider behind `PaymentProvider`.
 
 ## Not in this pass
 

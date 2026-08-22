@@ -40,6 +40,9 @@ const envSchema = z.object({
   SMTP_HOST: z.string().default('localhost'),
   SMTP_PORT: z.coerce.number().default(1025),
   SMTP_FROM: z.string().default('NIO Tech <no-reply@niotech.test>'),
+  // Omitted for local capture (Mailpit accepts anything); required by every hosted relay.
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
 
   PAYMENT_PROVIDER: z.enum(['mock']).default('mock'),
 });
@@ -55,6 +58,20 @@ if (!parsed.success) {
 export const env = parsed.data;
 
 const DEFAULT_DEV_SECRET = 'dev-only-secret-change-me';
+
+/**
+ * A managed database is reached over a network, unlike one sharing the container network or the
+ * host, so the connection has to be encrypted. Hostnames that never leave the machine are exempt.
+ */
+function databaseIsRemote(url: string): boolean {
+  const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', 'postgres', 'db']);
+  try {
+    return !LOCAL_HOSTS.has(new URL(url).hostname);
+  } catch {
+    // An unparseable URL will fail loudly at connection time; do not add a confusing second error.
+    return false;
+  }
+}
 
 /**
  * Configuration mistakes that are harmless locally become serious once the app is reachable, so
@@ -82,10 +99,22 @@ function assertDeployableConfig(): void {
   if (/:(nio|postgres|password)@/.test(env.DATABASE_URL)) {
     problems.push('DATABASE_URL still uses a default password. Set a generated one.');
   }
+  if (databaseIsRemote(env.DATABASE_URL) && !/[?&]sslmode=/.test(env.DATABASE_URL)) {
+    problems.push(
+      'DATABASE_URL points at a remote host without sslmode, which would send PHI across the ' +
+        'network in clear text. Append ?sslmode=require (or verify-full with a CA bundle).',
+    );
+  }
   if (env.WEB_ORIGIN.includes('localhost')) {
     problems.push(
       'WEB_ORIGIN is still localhost. It is printed into QR stickers and emailed links, so it must be ' +
         'the public URL or scanned kits will point nowhere.',
+    );
+  }
+  if (env.SMTP_HOST.endsWith('example.com')) {
+    problems.push(
+      'SMTP_HOST is still the placeholder. Point it at a real relay, or set SMTP_HOST=mailpit and run ' +
+        'with --profile mailpit to capture mail instead of sending it.',
     );
   }
 
@@ -99,6 +128,9 @@ function assertDeployableConfig(): void {
 
 /** True when tokens can be minted without a password, which callers surface loudly. */
 export const devAuthIsOpen = env.AUTH_PROVIDER === 'dev';
+
+/** Mail is being captured locally (Mailpit) rather than relayed anywhere. */
+export const smtpIsLocalCapture = ['localhost', '127.0.0.1', 'mailpit'].includes(env.SMTP_HOST);
 
 assertDeployableConfig();
 
