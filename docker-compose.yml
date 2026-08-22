@@ -8,7 +8,9 @@ services:
       POSTGRES_PASSWORD: nio
       POSTGRES_DB: nio
     ports:
-      - '5433:5432'
+      # Loopback-only. Docker publishes to every interface by default, which would expose these
+      # services to the network the moment this file is used anywhere but a laptop.
+      - '127.0.0.1:5433:5432'
     volumes:
       - nio-pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -22,8 +24,9 @@ services:
     container_name: nio-mailpit
     restart: unless-stopped
     ports:
-      - '1025:1025' # SMTP
-      - '8025:8025' # Web UI
+      # The Mailpit UI shows every notification email, including patient names and result links.
+      - '127.0.0.1:1025:1025' # SMTP
+      - '127.0.0.1:8025:8025' # Web UI
     healthcheck:
       test: ['CMD', '/mailpit', 'readyz']
       interval: 3s

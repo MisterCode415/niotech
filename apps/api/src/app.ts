@@ -1,6 +1,7 @@
 import Fastify, { type FastifyError } from 'fastify';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
+import rateLimit from '@fastify/rate-limit';
 import { ZodError, z } from 'zod';
 import { env } from './env.js';
 import { HttpError } from './lib/errors.js';
@@ -19,6 +20,9 @@ import { publicRoutes } from './routes/public.js';
 
 export async function buildApp() {
   const app = Fastify({
+    // Behind nginx every request otherwise appears to come from the proxy, which would make
+    // rate limiting count all clients as one and log the wrong address for every request.
+    trustProxy: env.NODE_ENV === 'production',
     logger:
       env.NODE_ENV === 'test'
         ? false
@@ -26,7 +30,10 @@ export async function buildApp() {
             level: 'info',
             transport:
               env.NODE_ENV === 'development'
-                ? { target: 'pino-pretty', options: { translateTime: 'HH:MM:ss', ignore: 'pid,hostname' } }
+                ? {
+                    target: 'pino-pretty',
+                    options: { translateTime: 'HH:MM:ss', ignore: 'pid,hostname' },
+                  }
                 : undefined,
           },
   });
@@ -38,6 +45,12 @@ export async function buildApp() {
 
   await app.register(multipart, {
     limits: { fileSize: 25 * 1024 * 1024, files: 1 },
+  });
+
+  await app.register(rateLimit, {
+    global: false,
+    max: 300,
+    timeWindow: '1 minute',
   });
 
   app.decorateRequest('actor', null);

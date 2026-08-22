@@ -7,8 +7,12 @@ coverage/
 .env
 .env.local
 .env.*.local
+.env.production
 
-
+# Deployment secrets and the private-access gate
+deploy/certs/
+deploy/letsencrypt/
+deploy/allowlist.conf
 
 # Local PHI file storage (never commit uploaded lab results)
 storage/

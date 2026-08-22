@@ -13,11 +13,13 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
     "db:seed": "tsx src/db/seed.ts",
+    "db:bootstrap": "tsx src/db/seedPlatformAdmin.ts",
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",
     "@fastify/multipart": "^9.2.1",
+    "@fastify/rate-limit": "^11.2.0",
     "@nio/shared": "workspace:*",
     "dotenv": "^17.2.3",
     "drizzle-orm": "^0.44.7",

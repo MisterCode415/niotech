@@ -14,38 +14,44 @@ export async function authRoutes(app: FastifyInstance) {
    * Dev-only shortcut that mints a token for an already-provisioned account. It cannot create
    * accounts, so the alpha table still gates who can reach the platform admin surface.
    */
-  app.post('/api/auth/dev/login', async (request) => {
-    const dev = devAuthProvider();
-    if (!dev) throw forbidden('Dev login is disabled when AUTH_PROVIDER=auth0');
+  app.post(
+    '/api/auth/dev/login',
+    {
+      config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+    },
+    async (request) => {
+      const dev = devAuthProvider();
+      if (!dev) throw forbidden('Dev login is disabled when AUTH_PROVIDER=auth0');
 
-    const { email } = devLoginSchema.parse(request.body);
+      const { email } = devLoginSchema.parse(request.body);
 
-    const known = await withPlatformScope(async (tx) => {
-      const [admin] = await tx
-        .select({ email: platformAdmins.email, name: platformAdmins.name })
-        .from(platformAdmins)
-        .where(eq(platformAdmins.email, email))
-        .limit(1);
-      if (admin) return { email: admin.email, name: admin.name ?? admin.email };
+      const known = await withPlatformScope(async (tx) => {
+        const [admin] = await tx
+          .select({ email: platformAdmins.email, name: platformAdmins.name })
+          .from(platformAdmins)
+          .where(eq(platformAdmins.email, email))
+          .limit(1);
+        if (admin) return { email: admin.email, name: admin.name ?? admin.email };
 
-      const [user] = await tx
-        .select({ email: users.email, name: users.name })
-        .from(users)
-        .where(eq(users.email, email))
-        .limit(1);
-      return user ?? null;
-    });
+        const [user] = await tx
+          .select({ email: users.email, name: users.name })
+          .from(users)
+          .where(eq(users.email, email))
+          .limit(1);
+        return user ?? null;
+      });
 
-    if (!known) throw notFound('No account exists for that email');
+      if (!known) throw notFound('No account exists for that email');
 
-    const token = await dev.issueToken({
-      subject: `dev|${known.email}`,
-      email: known.email,
-      name: known.name,
-    });
+      const token = await dev.issueToken({
+        subject: `dev|${known.email}`,
+        email: known.email,
+        name: known.name,
+      });
 
-    return { accessToken: token, tokenType: 'Bearer' };
-  });
+      return { accessToken: token, tokenType: 'Bearer' };
+    },
+  );
 
   app.get('/api/auth/me', async (request) => {
     const actor = requireActor(request);

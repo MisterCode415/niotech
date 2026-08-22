@@ -1,0 +1,79 @@
+# An explicit project name keeps production containers and volumes fully separate from the dev
+# stack in docker-compose.yml, which otherwise shares this directory's name and its volumes.
+name: nio-prod
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-nio}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.production}
+      POSTGRES_DB: ${POSTGRES_DB:-nio}
+    # Deliberately no published ports: the database is reachable only from the compose network.
+    # Use `docker compose exec postgres psql` or an SSH tunnel for admin access.
+    volumes:
+      - nio-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-nio} -d ${POSTGRES_DB:-nio}']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: nio-api:latest
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      NODE_ENV: production
+      STORAGE_LOCAL_PATH: /data/storage
+    volumes:
+      - nio-storage:/data/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # No published ports either; nginx reaches it over the compose network.
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    image: nio-web:latest
+    restart: unless-stopped
+    environment:
+      SERVER_NAME: ${SERVER_NAME:?set SERVER_NAME in .env.production}
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./deploy/certs:/etc/nginx/certs:ro
+      - ./deploy/allowlist.conf:/etc/nginx/allowlist.conf:ro
+      - nio-certbot-webroot:/var/www/certbot
+    depends_on:
+      - api
+
+  # Opt in with `--profile mailpit` to capture notification emails instead of sending them.
+  # Bound to loopback only; reach the UI with: ssh -L 8025:127.0.0.1:8025 user@server
+  mailpit:
+    image: axllent/mailpit:latest
+    profiles: ['mailpit']
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:8025:8025'
+
+  certbot:
+    image: certbot/certbot:latest
+    profiles: ['certbot']
+    volumes:
+      - nio-certbot-webroot:/var/www/certbot
+      - ./deploy/letsencrypt:/etc/letsencrypt
+    entrypoint: ['certbot']
+
+volumes:
+  nio-pgdata:
+  nio-storage:
+  nio-certbot-webroot:

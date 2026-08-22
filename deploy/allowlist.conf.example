@@ -1,0 +1,9 @@
+# Who may reach this deployment. Copy to allowlist.conf and edit, then: docker compose ... restart web
+#
+# This is the only thing standing between the open internet and a login screen that issues
+# superadmin tokens without a password. Find your address with: curl -s https://ifconfig.me
+
+allow 203.0.113.42;      # office
+# allow 198.51.100.0/24; # VPN range
+
+deny all;

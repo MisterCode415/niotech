@@ -1,0 +1,11 @@
+**/node_modules
+**/dist
+.git
+.github
+.env
+.env.*
+!.env.production.example
+storage
+terminals
+*.log
+.DS_Store

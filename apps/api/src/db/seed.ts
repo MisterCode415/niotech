@@ -197,6 +197,14 @@ async function seedCatalog(tx: Tx, businessUnitId: string, slug: string) {
 }
 
 async function main() {
+  if (env.NODE_ENV === 'production') {
+    console.error(
+      'This seed creates demo tenants and fake patient accounts, which must never exist in a ' +
+        'deployed environment. Run db:bootstrap instead to create only the platform admin.',
+    );
+    process.exit(1);
+  }
+
   await withPlatformScope(async (tx) => {
     const [admin] = await tx
       .insert(platformAdmins)

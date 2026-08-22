@@ -1,0 +1,80 @@
+upstream nio_api {
+    server api:4000;
+    keepalive 16;
+}
+
+# Cache policy is decided here rather than per-location because an add_header inside a location
+# block replaces every inherited header instead of adding to them, which would silently drop the
+# security headers below. Keeping all add_header directives at server level avoids that trap.
+map $uri $nio_cache_control {
+    # Vite emits content-hashed asset filenames, so those are safe to cache forever.
+    ~^/assets/  "public, max-age=31536000, immutable";
+    # Everything else is the SPA shell or a PHI-bearing API response.
+    default     "no-store";
+}
+
+# Port 80 exists to answer ACME challenges and to push everything else to TLS.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${SERVER_NAME};
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name ${SERVER_NAME};
+
+    ssl_certificate     /etc/nginx/certs/fullchain.pem;
+    ssl_certificate_key /etc/nginx/certs/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    # The private gate for this test deployment. Dev auth mints tokens without a password, so
+    # nothing here may be reachable from the open internet. Basic auth cannot be used instead:
+    # the SPA sends "Authorization: Bearer" on every API call, which replaces the browser's
+    # "Authorization: Basic" header and would make nginx reject every request.
+    include /etc/nginx/allowlist.conf;
+
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "no-referrer" always;
+    add_header Cache-Control $nio_cache_control always;
+
+    # Matches the API's own 25MB multipart limit so oversized lab PDFs fail with the API's
+    # error rather than a bare nginx 413.
+    client_max_body_size 25m;
+
+    location /api/ {
+        proxy_pass http://nio_api;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection        "";
+        # Lab result uploads and PDF downloads can outlast the default 60s.
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
+    }
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Client-side routing: deep links such as /scan/<token> must return the SPA shell.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
