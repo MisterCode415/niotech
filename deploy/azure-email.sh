@@ -16,6 +16,17 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # --- Settings ------------------------------------------------------------------------------
+SECRETS_FILE="deploy/.azure-secrets"
+
+# azure-provision.sh records the prefix it actually used. Reading it back matters because a
+# retry in a fresh resource group changes the prefix, and defaulting to "nio" would then point
+# this script at a resource group that no longer exists.
+saved() {
+  [[ -f "$SECRETS_FILE" ]] || return 0
+  { grep -m1 "^$1=" "$SECRETS_FILE" 2>/dev/null || true; } | cut -d= -f2-
+}
+
+PREFIX="${PREFIX:-$(saved PREFIX)}"
 PREFIX="${PREFIX:-nio}"
 RG="${RG:-${PREFIX}-rg}"
 # Where message content is stored. Not the same thing as the VM's region, and it cannot be
@@ -54,6 +65,14 @@ exists az group show -n "$RG" || fail "resource group '$RG' does not exist (run 
 
 step "Ensuring the communication CLI extension is present"
 az extension add --name communication --only-show-errors 2>/dev/null || true
+
+step "Resource provider"
+if [[ "$(az provider show -n Microsoft.Communication --query registrationState -o tsv 2>/dev/null || echo Unknown)" == "Registered" ]]; then
+  echo "    Microsoft.Communication: registered"
+else
+  echo "    Microsoft.Communication: registering (this can take a minute)"
+  az provider register --namespace Microsoft.Communication --wait
+fi
 
 TENANT_ID="$(az account show --query tenantId -o tsv)"
 

@@ -217,6 +217,35 @@ ADMIN_CIDR=203.0.113.42/32 ./deploy/azure-provision.sh
 | Location | `eastus` | `LOCATION` |
 | Names | prefixed `nio-` | `PREFIX` |
 
+#### When a region refuses to cooperate
+
+Azure gates subscriptions out of high-demand regions independently of quota, and newer
+subscriptions are gated hard. The script checks before building anything, because the failures are
+otherwise slow and wear several disguises: `location is restricted`, a bare `SkuNotAvailable`, or a
+baffling `Version should be in: []`.
+
+A region is only usable if it offers **both** a Flexible Server and a VM size — the server is
+privately networked, so it must share a region with the VM it serves. `westus3` has been seen
+offering the database while having no available 2-vCPU VM at all. When the preflight rejects a
+region it probes the alternatives and lists the ones that pass both checks.
+
+A region can also pass the preflight and still fail with `InternalServerError` on creation.
+Retrying the same region tends to fail identically; move to another one. The cleanest retry is a
+fresh resource group, which deletes nothing and leaves the failed attempt to be cleaned up in one
+command afterwards:
+
+```bash
+PREFIX=nio2 LOCATION=westcentralus ADMIN_CIDR=203.0.113.42/32 ./deploy/azure-provision.sh
+az group delete -n nio-rg --yes     # once the new stack is verified
+```
+
+Changing `PREFIX` changes the resource group name, so the prefix is recorded in
+`deploy/.azure-secrets` and `azure-email.sh` reads it back rather than assuming `nio-`.
+
+If every candidate region is restricted, either set `BUNDLED_DB=true` (page below) to run
+PostgreSQL on the VM and skip Flexible Server entirely, or raise an Azure support request under
+"Service and subscription limits".
+
 The VM is built from `deploy/cloud-init.yaml`, which installs Docker, enables `ufw`, and adds 2GB of
 swap — the web image build runs `tsc` plus Vite and wants roughly 2GB, which is uncomfortably close
 to a 4GB VM's limit without it.

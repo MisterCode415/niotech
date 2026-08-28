@@ -73,6 +73,77 @@ if [[ -z "${ADMIN_CIDR:-}" ]]; then
   echo "Detected your address as ${ADMIN_CIDR}. Override with ADMIN_CIDR if you need a wider range."
 fi
 
+# --- Region and size availability ----------------------------------------------------------
+# Subscriptions are gated out of high-demand regions and VM sizes independently of quota. At
+# creation time this surfaces as "location is restricted", a baffling "Version should be in: []",
+# or SkuNotAvailable, each leaving a half-built stack behind. Both APIs report the gating up
+# front, so check first. A region only counts if it offers *both* a Flexible Server and a VM to
+# put in front of it: the server is privately networked, so it cannot outlive its region.
+pg_available() {
+  local reason
+  reason="$(az postgres flexible-server list-skus -l "$1" --query "[0].reason" -o tsv 2>/dev/null || true)"
+  [[ -z "$reason" || "$reason" == "None" ]]
+}
+
+# 2 vCPU sizes with no subscription restriction. ARM64 sizes carry a 'p' in the size token and
+# are left out to keep the build architecture matching local development.
+vm_sizes_available() {
+  az vm list-skus -l "$1" --resource-type virtualMachines --all \
+    --query "[?(starts_with(name,'Standard_B2') || starts_with(name,'Standard_D2')) && !contains(name,'p') && length(restrictions)==\`0\`].name" \
+    -o tsv 2>/dev/null || true
+}
+
+suggest_regions() {
+  echo >&2
+  echo "Probing other regions for a working combination..." >&2
+  local tmp candidate
+  tmp="$(mktemp -d)"
+  for candidate in northcentralus westcentralus centralus westus westus3 canadacentral northeurope uksouth; do
+    (
+      if pg_available "$candidate" && [[ -n "$(vm_sizes_available "$candidate")" ]]; then
+        echo "$candidate" > "$tmp/$candidate"
+      fi
+    ) &
+  done
+  wait
+  for candidate in northcentralus westcentralus centralus westus westus3 canadacentral northeurope uksouth; do
+    [[ -s "$tmp/$candidate" ]] && echo "  usable: $candidate" >&2
+  done
+  rm -rf "$tmp"
+  echo >&2
+  echo "Alternatively set BUNDLED_DB=true in .env.production to run PostgreSQL on the VM," >&2
+  echo "which needs no Flexible Server and so only requires an available VM size." >&2
+}
+
+step "Checking availability in $LOCATION (this takes a moment)"
+AVAILABLE_SIZES="$(vm_sizes_available "$LOCATION")"
+
+if ! pg_available "$LOCATION"; then
+  echo >&2
+  echo "error: '$LOCATION' is restricted for Flexible Server on this subscription." >&2
+  suggest_regions
+  exit 1
+fi
+
+if [[ -z "$AVAILABLE_SIZES" ]]; then
+  echo >&2
+  echo "error: no unrestricted 2-vCPU VM size is available in '$LOCATION'." >&2
+  suggest_regions
+  exit 1
+fi
+
+if ! grep -qx -- "$VM_SIZE" <<<"$AVAILABLE_SIZES"; then
+  echo >&2
+  echo "error: VM size '$VM_SIZE' is not available to this subscription in '$LOCATION'." >&2
+  echo "Available 2-vCPU sizes there:" >&2
+  sed 's/^/  /' <<<"$AVAILABLE_SIZES" >&2
+  echo >&2
+  echo "Re-run with one of those, for example:" >&2
+  echo "  LOCATION=$LOCATION VM_SIZE=$(head -1 <<<"$AVAILABLE_SIZES") ADMIN_CIDR=$ADMIN_CIDR $0" >&2
+  exit 1
+fi
+echo "    Flexible Server available, VM size $VM_SIZE available"
+
 echo
 echo "Subscription: $(az account show --query name -o tsv)"
 echo "Resource group: $RG    Location: $LOCATION"
@@ -81,6 +152,21 @@ echo "Inbound access restricted to: $ADMIN_CIDR"
 echo
 read -r -p "Create these resources? [y/N] " confirm
 [[ "$confirm" == "y" || "$confirm" == "Y" ]] || exit 0
+
+# --- Resource providers --------------------------------------------------------------------
+# A subscription that has never used a service cannot create it. The CLI auto-registers some
+# namespaces but not all, so a fresh subscription otherwise fails partway through with
+# MissingSubscriptionRegistration.
+step "Resource providers"
+for namespace in Microsoft.Network Microsoft.Compute Microsoft.DBforPostgreSQL; do
+  state="$(az provider show -n "$namespace" --query registrationState -o tsv 2>/dev/null || echo Unknown)"
+  if [[ "$state" == "Registered" ]]; then
+    echo "    $namespace: registered"
+  else
+    echo "    $namespace: registering (this can take a minute)"
+    az provider register --namespace "$namespace" --wait
+  fi
+done
 
 # --- Resource group ------------------------------------------------------------------------
 step "Resource group"
@@ -95,9 +181,30 @@ step "Virtual network and app subnet"
 if exists az network vnet show -g "$RG" -n "$VNET"; then
   echo "    exists"
 else
-  az network vnet create -g "$RG" -n "$VNET" \
+  # -l is explicit: without it the VNet inherits the resource group's region, which silently
+  # breaks a retry in a different region because Flexible Server needs its delegated subnet
+  # to be in the same region as the server.
+  az network vnet create -g "$RG" -n "$VNET" -l "$LOCATION" \
     --address-prefix 10.20.0.0/16 \
     --subnet-name "$APP_SUBNET" --subnet-prefix 10.20.1.0/24 -o none
+fi
+
+VNET_LOCATION="$(az network vnet show -g "$RG" -n "$VNET" --query location -o tsv)"
+if [[ "$VNET_LOCATION" != "$LOCATION" ]]; then
+  cat >&2 <<MISMATCH
+
+error: the existing network is in '$VNET_LOCATION' but LOCATION is '$LOCATION'.
+
+A Flexible Server must sit in the same region as its delegated subnet, so the network cannot
+stay where it is. The VNet and NSG are free and nothing else depends on them yet, so delete
+them and re-run:
+
+  az network vnet delete -g $RG -n $VNET
+  az network nsg delete -g $RG -n $NSG
+  LOCATION=$LOCATION ADMIN_CIDR=$ADMIN_CIDR $0
+
+MISMATCH
+  exit 1
 fi
 
 step "Database subnet (delegated to PostgreSQL)"
@@ -115,7 +222,7 @@ step "Network security group"
 if exists az network nsg show -g "$RG" -n "$NSG"; then
   echo "    exists"
 else
-  az network nsg create -g "$RG" -n "$NSG" -o none
+  az network nsg create -g "$RG" -n "$NSG" -l "$LOCATION" -o none
   # Port 80 stays open to the world so Let's Encrypt can validate on renewal without anyone
   # editing firewall rules on a schedule. It is safe because the nginx server block on 80 only
   # serves ACME challenge files and a redirect: no app content and no API are reachable there.
@@ -142,9 +249,10 @@ if exists az postgres flexible-server show -g "$RG" -n "$PG_NAME"; then
   [[ -n "$PG_PASSWORD" ]] || echo "    note: password unknown (not in $SECRETS_FILE); reset it with 'az postgres flexible-server update --admin-password'"
 else
   PG_PASSWORD="$(openssl rand -hex 24)"
+  PG_ERR="$(mktemp)"
   # Private access has to be chosen at creation time. A public-access server cannot be
   # converted to VNet integration afterwards; it has to be rebuilt.
-  az postgres flexible-server create \
+  if ! az postgres flexible-server create \
     -g "$RG" -n "$PG_NAME" -l "$LOCATION" \
     --tier "$PG_TIER" --sku-name "$PG_SKU" \
     --storage-size "$PG_STORAGE_GB" --version "$PG_VERSION" \
@@ -152,11 +260,37 @@ else
     --database-name "$PG_DATABASE" \
     --vnet "$VNET" --subnet "$DB_SUBNET" \
     --private-dns-zone "$DNS_ZONE" \
-    --yes -o none
+    --yes -o none 2>"$PG_ERR"; then
+
+    cat "$PG_ERR" >&2
+    # The preflight already screens out regions the capability API flags, so reaching here means
+    # the region claims to be usable and fails anyway. Seen on subscriptions that are gated in
+    # ways the API does not report; the only remedy is a different region.
+    cat >&2 <<FAILED
+
+Creating the server failed even though '$LOCATION' reports itself as available.
+
+Retrying the same region usually fails the same way. Move to another one, remembering that the
+network has to move with it: a privately networked server must share a region with its VM. The
+simplest clean retry is a separate resource group, which deletes nothing:
+
+  PREFIX=${PREFIX}2 LOCATION=<other-region> ADMIN_CIDR=$ADMIN_CIDR $0
+
+FAILED
+    suggest_regions
+    rm -f "$PG_ERR"
+    exit 1
+  fi
+  rm -f "$PG_ERR"
 
   save_secret PG_PASSWORD "$PG_PASSWORD"
   echo "    password written to $SECRETS_FILE (gitignored, chmod 600)"
 fi
+
+# Recorded so azure-email.sh targets the same deployment. A retry in a fresh resource group
+# changes the prefix, and without this the email script would silently look for the old one.
+save_secret PREFIX "$PREFIX"
+save_secret LOCATION "$LOCATION"
 
 PG_FQDN="$(az postgres flexible-server show -g "$RG" -n "$PG_NAME" --query fullyQualifiedDomainName -o tsv)"
 
@@ -167,7 +301,7 @@ if exists az vm show -g "$RG" -n "$VM_NAME"; then
 else
   # --nsg "" leaves the NIC without its own NSG so the subnet NSG above is the single
   # place where inbound rules live.
-  az vm create -g "$RG" -n "$VM_NAME" \
+  az vm create -g "$RG" -n "$VM_NAME" -l "$LOCATION" \
     --image "$VM_IMAGE" --size "$VM_SIZE" \
     --admin-username "$VM_ADMIN" --ssh-key-values "$SSH_KEY" \
     --vnet-name "$VNET" --subnet "$APP_SUBNET" \
