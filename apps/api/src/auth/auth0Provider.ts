@@ -20,6 +20,31 @@ interface Auth0Config {
   m2mClientSecret: string;
 }
 
+interface Auth0User {
+  user_id: string;
+  email_verified?: boolean;
+  last_password_reset?: string;
+  app_metadata?: {
+    nio_invitation_issued_at?: string;
+  };
+}
+
+function invitationIsPending(user: Auth0User): boolean {
+  const issuedAt = user.app_metadata?.nio_invitation_issued_at;
+
+  // Legacy users have no invitation marker; retain the safe pre-existing behavior for them.
+  if (!issuedAt) return !user.email_verified;
+  if (!user.last_password_reset) return true;
+
+  const issuedTime = Date.parse(issuedAt);
+  const passwordResetTime = Date.parse(user.last_password_reset);
+  return (
+    !Number.isFinite(issuedTime) ||
+    !Number.isFinite(passwordResetTime) ||
+    passwordResetTime < issuedTime
+  );
+}
+
 function requireConfig(): Auth0Config {
   const missing = (
     [
@@ -51,6 +76,7 @@ export class Auth0Provider implements AuthProvider {
   private readonly config: Auth0Config;
   private readonly jwks: ReturnType<typeof createRemoteJWKSet>;
   private managementToken: { value: string; expiresAt: number } | null = null;
+  private databaseConnectionId: string | null = null;
 
   constructor() {
     this.config = requireConfig();
@@ -164,12 +190,14 @@ export class Auth0Provider implements AuthProvider {
   }
 
   async createOrganization(input: CreateOrganizationInput): Promise<{ orgId: string }> {
+    let orgId: string;
+
     try {
       const org = await this.management<{ id: string }>('/organizations', {
         method: 'POST',
         body: JSON.stringify({ name: input.slug, display_name: input.name }),
       });
-      return { orgId: org.id };
+      orgId = org.id;
     } catch (error) {
       /*
        * Onboarding writes to Auth0 before it writes to the database, and the tenant cannot be
@@ -183,12 +211,50 @@ export class Auth0Provider implements AuthProvider {
         `/organizations/name/${encodeURIComponent(input.slug)}`,
         { method: 'GET' },
       );
-      return { orgId: existing.id };
+      orgId = existing.id;
+    }
+
+    await this.enableDatabaseConnection(orgId);
+    return { orgId };
+  }
+
+  /**
+   * Organizations reject every login until at least one connection is explicitly enabled for
+   * them. The database connection is shared by NIO's organizations, while membership itself stays
+   * application-controlled rather than being granted automatically on login.
+   */
+  private async enableDatabaseConnection(orgId: string): Promise<void> {
+    if (!this.databaseConnectionId) {
+      const connections = await this.management<Array<{ id: string; name: string }>>(
+        '/connections?strategy=auth0',
+        { method: 'GET' },
+      );
+      const connection = connections.find(
+        (candidate) => candidate.name === 'Username-Password-Authentication',
+      );
+      if (!connection) {
+        throw badRequest('Auth0 database connection "Username-Password-Authentication" was not found');
+      }
+      this.databaseConnectionId = connection.id;
+    }
+
+    try {
+      await this.management(`/organizations/${orgId}/enabled_connections`, {
+        method: 'POST',
+        body: JSON.stringify({
+          connection_id: this.databaseConnectionId,
+          assign_membership_on_login: false,
+        }),
+      });
+    } catch (error) {
+      // Retries and adoption of a partially-created organization are intentionally idempotent.
+      if (!(error instanceof HttpError) || !error.message.includes('(409)')) throw error;
     }
   }
 
   async inviteUser(input: InviteUserInput): Promise<InvitedUser> {
-    const existing = await this.management<Array<{ user_id: string; email_verified?: boolean }>>(
+    const signInUrl = new URL(input.loginPath, env.WEB_ORIGIN).toString();
+    const existing = await this.management<Auth0User[]>(
       `/users-by-email?email=${encodeURIComponent(input.email)}`,
       { method: 'GET' },
     );
@@ -201,13 +267,12 @@ export class Auth0Provider implements AuthProvider {
       subject = found.user_id;
 
       /*
-       * An unverified account belongs to an invitee who never completed their ticket, so reissue
-       * one — otherwise an invite whose mail failed to send could never be repaired, since the
-       * account exists from then on. A verified user already chose a password and must not be
-       * sent an unsolicited reset just because someone typed their address.
+       * Verification and activation are independent in Auth0: an operator can verify an address
+       * without the invitee ever choosing a password. For NIO-created accounts, only a password
+       * reset after the invitation timestamp proves the activation ticket was completed.
        */
-      if (!found.email_verified) {
-        passwordSetUrl = await this.createPasswordSetUrl(found.user_id);
+      if (invitationIsPending(found)) {
+        passwordSetUrl = await this.createPasswordSetUrl(found.user_id, signInUrl);
       }
     } else {
       /*
@@ -215,6 +280,7 @@ export class Auth0Provider implements AuthProvider {
        * ticket below, which is also what verifies the address. Creating the account already
        * verified would let anyone who guessed an invited address inherit the role attached to it.
        */
+      const invitationIssuedAt = new Date().toISOString();
       const created = await this.management<{ user_id: string }>('/users', {
         method: 'POST',
         body: JSON.stringify({
@@ -223,10 +289,11 @@ export class Auth0Provider implements AuthProvider {
           connection: 'Username-Password-Authentication',
           email_verified: false,
           password: crypto.randomUUID() + 'Aa1!',
+          app_metadata: { nio_invitation_issued_at: invitationIssuedAt },
         }),
       });
       subject = created.user_id;
-      passwordSetUrl = await this.createPasswordSetUrl(created.user_id);
+      passwordSetUrl = await this.createPasswordSetUrl(created.user_id, signInUrl);
     }
 
     if (input.orgId) {
@@ -236,19 +303,20 @@ export class Auth0Provider implements AuthProvider {
       });
     }
 
-    return { subject, passwordSetUrl };
+    return { subject, passwordSetUrl, signInUrl };
   }
 
   /**
    * Completing this ticket proves the invitee reads the address, so Auth0 marks it verified at the
    * same time as it sets the password. That is what the API's verified-email requirement rests on.
    */
-  private async createPasswordSetUrl(userId: string): Promise<string> {
+  private async createPasswordSetUrl(userId: string, signInUrl: string): Promise<string> {
     const ticket = await this.management<{ ticket: string }>('/tickets/password-change', {
       method: 'POST',
       body: JSON.stringify({
         user_id: userId,
-        result_url: `${env.WEB_ORIGIN}/login`,
+        // Preserve the organization context so completing activation leads to the correct tenant.
+        result_url: signInUrl,
         mark_email_as_verified: true,
         ttl_sec: INVITE_TTL_SECONDS,
       }),

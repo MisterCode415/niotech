@@ -37,11 +37,13 @@ export async function businessUnitRoutes(app: FastifyInstance) {
           awaitingReview: sql<number>`count(*) filter (where ${orders.status} = 'awaiting_clinician_review')::int`,
           released: sql<number>`count(*) filter (where ${orders.status} = 'results_released')::int`,
         })
-        .from(orders);
+        .from(orders)
+        .where(eq(orders.businessUnitId, ctx.businessUnitId));
 
       const roster = await tx
         .select({ role: memberships.role, count: sql<number>`count(*)::int` })
         .from(memberships)
+        .where(eq(memberships.businessUnitId, ctx.businessUnitId))
         .groupBy(memberships.role);
 
       return {
@@ -252,13 +254,15 @@ export async function businessUnitRoutes(app: FastifyInstance) {
       orgId: businessUnit?.auth0OrgId ?? null,
       email: input.email,
       name: input.name,
+      loginPath: `/login?org=${encodeURIComponent(slug)}`,
     });
 
-    if (invited.passwordSetUrl) {
+    if (invited.passwordSetUrl && invited.signInUrl) {
       await sendInvitationEmail({
         email: input.email,
         name: input.name,
-        url: invited.passwordSetUrl,
+        passwordSetUrl: invited.passwordSetUrl,
+        signInUrl: invited.signInUrl,
       });
     }
 

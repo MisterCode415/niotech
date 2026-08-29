@@ -41,7 +41,16 @@ if [[ "$(read_env BUNDLED_DB)" == "true" ]]; then
 fi
 
 echo "==> Applying migrations"
-$COMPOSE run --rm api pnpm db:migrate
+if [[ -n "${MIGRATION_DATABASE_URL:-}" ]]; then
+  # Forward the administrator URL only to this disposable container. It is intentionally absent
+  # from .env.production so the long-running API cannot read a credential that bypasses RLS.
+  $COMPOSE run --rm -e MIGRATION_DATABASE_URL="$MIGRATION_DATABASE_URL" api pnpm db:migrate
+elif [[ "$(read_env DATABASE_URL)" == postgres://nio_app:* ]]; then
+  fail "DATABASE_URL uses nio_app; export MIGRATION_DATABASE_URL with the administrator URL before deploying"
+else
+  # First deployment compatibility, before deploy/create-app-db-role.sql has been applied.
+  $COMPOSE run --rm api pnpm db:migrate
+fi
 
 echo "==> Ensuring platform admin exists"
 $COMPOSE run --rm api pnpm db:bootstrap

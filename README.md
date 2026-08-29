@@ -258,21 +258,30 @@ git clone <your-repo> nio-platform && cd nio-platform
 cp .env.production.example .env.production
 cp deploy/allowlist.conf.example deploy/allowlist.conf
 
-# Fill in .env.production: hostname, the DATABASE_URL printed by the provisioning script,
-# and a fresh secret for each value marked replace-me.
+# Keep the administrator URL printed by provisioning out of .env.production. Create the restricted
+# runtime login with a URL-safe password, then put its nio_app URL in .env.production.
+export ADMIN_DATABASE_URL='postgres://nioadmin:...@.../nio?sslmode=require'
+export APP_DATABASE_PASSWORD="$(openssl rand -hex 32)"
+docker run --rm -i postgres:17-alpine psql "$ADMIN_DATABASE_URL" \
+  -v app_password="$APP_DATABASE_PASSWORD" < deploy/create-app-db-role.sql
+
+# Fill in .env.production: hostname, the nio_app DATABASE_URL, and a fresh secret for each value
+# marked replace-me. Keep APP_DATABASE_PASSWORD somewhere secure.
 openssl rand -base64 48   # DEV_AUTH_SECRET
 
 # Put your own address in the allowlist, or nothing will be reachable.
 curl -s https://ifconfig.me
 
-./deploy/deploy.sh     # builds, migrates, creates the platform admin, starts everything
+MIGRATION_DATABASE_URL="$ADMIN_DATABASE_URL" ./deploy/deploy.sh
 ./deploy/certs.sh      # replaces the self-signed placeholder with Let's Encrypt
 ```
 
 Point the DNS A record at the VM's public IP first, or certificate issuance will fail.
 
 Then sign in as `PLATFORM_ADMIN_EMAIL` and create the first business unit. Redeploying a change is
-`git pull && ./deploy/deploy.sh`.
+`git pull && MIGRATION_DATABASE_URL="$ADMIN_DATABASE_URL" ./deploy/deploy.sh`. The administrator URL
+is passed only to the disposable migration container; the running API receives only the restricted
+`nio_app` credential and therefore cannot bypass row-level security.
 
 ### Why port 80 is open to everyone
 

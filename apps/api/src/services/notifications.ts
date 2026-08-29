@@ -30,6 +30,14 @@ const transport = nodemailer.createTransport({
   auth: env.SMTP_USER ? { user: env.SMTP_USER, pass: env.SMTP_PASS } : undefined,
 });
 
+function escapeHtml(value: string): string {
+  return value.replace(
+    /[&<>"']/g,
+    (character) =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' })[character]!,
+  );
+}
+
 /**
  * Sends an invitee the one-time link that sets their first password. This deliberately skips the
  * in-app notification that other messages write: the recipient has no way to sign in and read it
@@ -42,17 +50,37 @@ const transport = nodemailer.createTransport({
 export async function sendInvitationEmail(input: {
   email: string;
   name: string;
-  url: string;
+  passwordSetUrl: string;
+  signInUrl: string;
 }): Promise<void> {
   await transport.sendMail({
     from: env.SMTP_FROM,
     to: input.email,
-    subject: 'Set your NIO Tech password',
+    subject: 'Your NIO Tech account is ready',
     text:
       `Hello ${input.name},\n\n` +
-      `An account has been created for you on NIO Tech. Choose a password to activate it:\n\n` +
-      `${input.url}\n\n` +
-      `This link can be used once and expires in seven days.`,
+      `An account has been created for you on NIO Tech. Set your password and activate your account:\n\n` +
+      `${input.passwordSetUrl}\n\n` +
+      `The activation link can be used once and expires in seven days. After activation, sign in here:\n\n` +
+      `${input.signInUrl}`,
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;color:#17202a">
+        <h1 style="font-size:24px">Your NIO Tech account is ready</h1>
+        <p>Hello ${escapeHtml(input.name)},</p>
+        <p>An account has been created for you on NIO Tech.</p>
+        <p style="margin:28px 0">
+          <a href="${escapeHtml(input.passwordSetUrl)}"
+             style="background:#2563eb;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none">
+            Set password and activate account
+          </a>
+        </p>
+        <p style="font-size:13px;color:#5f6b76">
+          The activation link can be used once and expires in seven days.
+        </p>
+        <p>After activation, you can always sign in at:</p>
+        <p><a href="${escapeHtml(input.signInUrl)}">${escapeHtml(input.signInUrl)}</a></p>
+      </div>
+    `,
   });
 }
 

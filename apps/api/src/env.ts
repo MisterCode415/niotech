@@ -15,6 +15,8 @@ const envSchema = z.object({
   API_PUBLIC_URL: z.string().default('http://localhost:4000'),
 
   DATABASE_URL: z.string().default('postgres://nio:nio@localhost:5433/nio'),
+  /** Optional privileged URL used only by the one-off migration process, never by the API pool. */
+  MIGRATION_DATABASE_URL: z.string().optional(),
 
   AUTH_PROVIDER: z.enum(['dev', 'auth0']).default('dev'),
   DEV_AUTH_SECRET: z.string().default('dev-only-secret-change-me'),

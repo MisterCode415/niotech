@@ -21,6 +21,8 @@ export interface InviteUserInput {
   orgId: string | null;
   email: string;
   name: string;
+  /** App-relative login page, including the business-unit slug used to scope Auth0 login. */
+  loginPath: string;
 }
 
 export interface InvitedUser {
@@ -32,6 +34,8 @@ export interface InvitedUser {
    * created with a throwaway password nobody knows.
    */
   passwordSetUrl?: string;
+  /** Stable app link the invitee can use after the one-time password ticket expires. */
+  signInUrl?: string;
 }
 
 export interface AuthProvider {

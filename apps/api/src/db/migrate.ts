@@ -9,7 +9,10 @@ const migrationsFolder = path.join(path.dirname(fileURLToPath(import.meta.url)),
 
 async function main() {
   // A dedicated single-use connection: the migrator must not share the pooled app client.
-  const client = postgres(env.DATABASE_URL, { max: 1, onnotice: () => {} });
+  const client = postgres(env.MIGRATION_DATABASE_URL ?? env.DATABASE_URL, {
+    max: 1,
+    onnotice: () => {},
+  });
   try {
     await migrate(drizzle(client), { migrationsFolder });
     console.log('Migrations applied.');

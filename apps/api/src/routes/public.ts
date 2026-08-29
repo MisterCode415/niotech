@@ -114,6 +114,7 @@ export async function publicRoutes(app: FastifyInstance) {
       orgId: businessUnit.auth0OrgId,
       email: input.email,
       name: input.name,
+      loginPath: `/login?org=${encodeURIComponent(slug)}`,
     });
 
     /*
@@ -121,11 +122,12 @@ export async function publicRoutes(app: FastifyInstance) {
      * never returned in the response. Registering with an address that is already verified sends
      * nothing while still answering 201, so the reply cannot be used to enumerate accounts.
      */
-    if (invited.passwordSetUrl) {
+    if (invited.passwordSetUrl && invited.signInUrl) {
       await sendInvitationEmail({
         email: input.email,
         name: input.name,
-        url: invited.passwordSetUrl,
+        passwordSetUrl: invited.passwordSetUrl,
+        signInUrl: invited.signInUrl,
       });
     }
 
