@@ -1,6 +1,8 @@
 import { useState } from 'react';
-import { Navigate } from 'react-router-dom';
+import { Navigate, useSearchParams } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../lib/auth';
+import { api } from '../lib/api';
 import { Alert, Field } from '../components/ui';
 
 const DEV_PERSONAS = [
@@ -13,26 +15,42 @@ const DEV_PERSONAS = [
   { email: 'admin@metabolic.test', role: 'Business unit admin — Metabolic Co' },
 ];
 
+interface LoginHandoff {
+  businessUnit: { name: string; slug: string };
+  organization: string | null;
+}
+
 export function Login() {
-  const { me, login, provider, loading } = useAuth();
+  const { me, signInAsDev, signInWithAuth0, provider, loading } = useAuth();
+  const [searchParams] = useSearchParams();
   const [email, setEmail] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
+  // Arriving from a storefront scopes the login to that tenant's Auth0 organization; arriving
+  // directly (a platform admin, say) has no organization and uses the plain tenant login.
+  const orgSlug = searchParams.get('org');
+  const handoff = useQuery({
+    queryKey: ['login-handoff', orgSlug],
+    queryFn: () => api<LoginHandoff>(`/api/public/${orgSlug}/login`),
+    enabled: Boolean(orgSlug) && provider === 'auth0',
+  });
+
   if (loading) return <div className="centered">Loading…</div>;
   if (me) return <Navigate to="/portal" replace />;
 
-  async function signIn(target: string) {
+  async function run(action: () => Promise<void>) {
     setBusy(true);
     setError('');
     try {
-      await login(target);
+      await action();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sign in failed');
-    } finally {
       setBusy(false);
     }
   }
+
+  const isAuth0 = provider === 'auth0';
 
   return (
     <div className="centered">
@@ -44,39 +62,68 @@ export function Login() {
 
         <Alert tone="error">{error}</Alert>
 
-        {provider === 'auth0' ? (
-          <Alert tone="info">
-            This environment is configured for Auth0. Start the hosted login flow to continue.
-          </Alert>
-        ) : (
-          <Alert tone="info">
-            Running with the local development identity provider. Accounts must already exist —
-            signing in never creates one.
-          </Alert>
-        )}
-
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            void signIn(email);
-          }}
-        >
-          <Field label="Email address">
-            <input
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              placeholder="you@example.com"
-              required
-            />
-          </Field>
-          <button className="primary" type="submit" disabled={busy} style={{ width: '100%' }}>
-            {busy ? 'Signing in…' : 'Sign in'}
-          </button>
-        </form>
-
-        {provider === 'dev' ? (
+        {isAuth0 ? (
           <>
+            {handoff.data ? (
+              <Alert tone="info">Signing in to {handoff.data.businessUnit.name}.</Alert>
+            ) : null}
+
+            {orgSlug && handoff.isError ? (
+              <Alert tone="error">
+                That business unit could not be found. You can still sign in below.
+              </Alert>
+            ) : null}
+
+            {handoff.data && !handoff.data.organization ? (
+              <Alert tone="info">
+                This business unit has no Auth0 organization yet, so the standard login applies.
+              </Alert>
+            ) : null}
+
+            <button
+              className="primary"
+              type="button"
+              style={{ width: '100%' }}
+              disabled={busy || (Boolean(orgSlug) && handoff.isLoading)}
+              onClick={() =>
+                void run(() =>
+                  signInWithAuth0({
+                    organization: handoff.data?.organization ?? undefined,
+                    returnTo: searchParams.get('returnTo') ?? '/portal',
+                  }),
+                )
+              }
+            >
+              {busy ? 'Redirecting…' : 'Continue to sign in'}
+            </button>
+          </>
+        ) : (
+          <>
+            <Alert tone="info">
+              Running with the local development identity provider. Accounts must already exist —
+              signing in never creates one.
+            </Alert>
+
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                void run(() => signInAsDev(email));
+              }}
+            >
+              <Field label="Email address">
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  placeholder="you@example.com"
+                  required
+                />
+              </Field>
+              <button className="primary" type="submit" disabled={busy} style={{ width: '100%' }}>
+                {busy ? 'Signing in…' : 'Sign in'}
+              </button>
+            </form>
+
             <div className="card-title" style={{ marginTop: 22 }}>
               Seeded accounts
             </div>
@@ -85,7 +132,7 @@ export function Login() {
                 key={persona.email}
                 className="persona"
                 disabled={busy}
-                onClick={() => void signIn(persona.email)}
+                onClick={() => void run(() => signInAsDev(persona.email))}
               >
                 <span>
                   <span className="small mono">{persona.email}</span>
@@ -96,7 +143,7 @@ export function Login() {
               </button>
             ))}
           </>
-        ) : null}
+        )}
       </div>
     </div>
   );

@@ -9,6 +9,20 @@ export function setToken(token: string | null): void {
   else localStorage.removeItem(TOKEN_KEY);
 }
 
+/**
+ * How a request obtains its bearer token. The dev provider mints a long-lived token that is kept
+ * in localStorage, but Auth0 access tokens expire and are refreshed by the SDK, which holds them
+ * in memory so a stolen localStorage entry cannot outlive the tab. Resolving the token per request
+ * rather than reading it synchronously is what lets both live behind the same call sites.
+ */
+type TokenResolver = () => Promise<string | null>;
+
+let resolveToken: TokenResolver = async () => getToken();
+
+export function setTokenResolver(resolver: TokenResolver | null): void {
+  resolveToken = resolver ?? (async () => getToken());
+}
+
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -34,7 +48,7 @@ export async function api<T = unknown>(
   path: string,
   options: { method?: string; body?: unknown; raw?: boolean } = {},
 ): Promise<T> {
-  const token = getToken();
+  const token = await resolveToken();
   const isFormData = options.body instanceof FormData;
 
   const response = await fetch(path, {
@@ -43,7 +57,11 @@ export async function api<T = unknown>(
       ...(token ? { authorization: `Bearer ${token}` } : {}),
       ...(options.body !== undefined && !isFormData ? { 'content-type': 'application/json' } : {}),
     },
-    body: isFormData ? (options.body as FormData) : options.body !== undefined ? JSON.stringify(options.body) : undefined,
+    body: isFormData
+      ? (options.body as FormData)
+      : options.body !== undefined
+        ? JSON.stringify(options.body)
+        : undefined,
   });
 
   if (!response.ok) throw await toError(response);
@@ -53,7 +71,7 @@ export async function api<T = unknown>(
 
 /** Authenticated file fetch for PHI documents, which are never linkable directly. */
 export async function fetchBlobUrl(path: string): Promise<string> {
-  const token = getToken();
+  const token = await resolveToken();
   const response = await fetch(path, {
     headers: token ? { authorization: `Bearer ${token}` } : {},
   });

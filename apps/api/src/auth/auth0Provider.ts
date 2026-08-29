@@ -1,12 +1,16 @@
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { env } from '../env.js';
-import { unauthorized, badRequest } from '../lib/errors.js';
+import { unauthorized, badRequest, HttpError } from '../lib/errors.js';
 import type {
   AuthProvider,
   AuthIdentity,
   CreateOrganizationInput,
   InviteUserInput,
+  InvitedUser,
 } from './provider.js';
+
+/** Long enough to survive a weekend and an ignored inbox, short enough to expire if leaked. */
+const INVITE_TTL_SECONDS = 7 * 24 * 60 * 60;
 
 interface Auth0Config {
   domain: string;
@@ -50,9 +54,7 @@ export class Auth0Provider implements AuthProvider {
 
   constructor() {
     this.config = requireConfig();
-    this.jwks = createRemoteJWKSet(
-      new URL(`https://${this.config.domain}/.well-known/jwks.json`),
-    );
+    this.jwks = createRemoteJWKSet(new URL(`https://${this.config.domain}/.well-known/jwks.json`));
   }
 
   async verifyToken(token: string): Promise<AuthIdentity> {
@@ -74,10 +76,32 @@ export class Auth0Provider implements AuthProvider {
         throw unauthorized('Token is missing subject or email claim');
       }
 
+      /*
+       * Authorisation here is keyed on the email address: it is matched against `platform_admins`
+       * and `users` to decide what the caller may do. An unverified address is therefore a claim
+       * to an identity, not proof of one — anyone able to sign up could assert a superadmin's
+       * address. The tenant should also refuse self-signup, but this check has to hold on its own,
+       * because a connection setting can be changed by anyone with dashboard access.
+       */
+      const emailVerified =
+        payload.email_verified === true || payload['https://niotech.io/email_verified'] === true;
+
+      if (!emailVerified) {
+        throw unauthorized('Email address is not verified');
+      }
+
+      // Same reasoning as email: a plain `name` only survives if the API is configured to emit it,
+      // so the namespaced claim the Action sets is the dependable source.
+      const name =
+        (typeof payload.name === 'string' && payload.name) ||
+        (typeof payload['https://niotech.io/name'] === 'string' &&
+          (payload['https://niotech.io/name'] as string)) ||
+        undefined;
+
       return {
         subject: payload.sub,
         email,
-        name: typeof payload.name === 'string' ? payload.name : undefined,
+        name,
         orgId: typeof payload.org_id === 'string' ? payload.org_id : undefined,
       };
     } catch (error) {
@@ -129,37 +153,81 @@ export class Auth0Provider implements AuthProvider {
       const detail = await response.text();
       throw badRequest(`Auth0 request failed (${response.status}): ${detail}`);
     }
-    return (await response.json()) as T;
+
+    /*
+     * Some management endpoints answer 204 with no body at all — adding an organization member is
+     * one. Handing an empty string to JSON.parse throws, which would report a call that in fact
+     * succeeded as a failure, so callers that ignore the result get undefined instead.
+     */
+    const body = await response.text();
+    return (body ? JSON.parse(body) : undefined) as T;
   }
 
   async createOrganization(input: CreateOrganizationInput): Promise<{ orgId: string }> {
-    const org = await this.management<{ id: string }>('/organizations', {
-      method: 'POST',
-      body: JSON.stringify({ name: input.slug, display_name: input.name }),
-    });
-    return { orgId: org.id };
+    try {
+      const org = await this.management<{ id: string }>('/organizations', {
+        method: 'POST',
+        body: JSON.stringify({ name: input.slug, display_name: input.name }),
+      });
+      return { orgId: org.id };
+    } catch (error) {
+      /*
+       * Onboarding writes to Auth0 before it writes to the database, and the tenant cannot be
+       * rolled back with the transaction, so a failure partway through strands an organization.
+       * Adopting the existing one lets a retry of the same slug succeed rather than wedging that
+       * slug permanently behind a conflict. The database still decides whether the slug is free.
+       */
+      if (!(error instanceof HttpError) || !error.message.includes('(409)')) throw error;
+
+      const existing = await this.management<{ id: string }>(
+        `/organizations/name/${encodeURIComponent(input.slug)}`,
+        { method: 'GET' },
+      );
+      return { orgId: existing.id };
+    }
   }
 
-  async inviteUser(input: InviteUserInput): Promise<{ subject: string }> {
-    const existing = await this.management<Array<{ user_id: string }>>(
+  async inviteUser(input: InviteUserInput): Promise<InvitedUser> {
+    const existing = await this.management<Array<{ user_id: string; email_verified?: boolean }>>(
       `/users-by-email?email=${encodeURIComponent(input.email)}`,
       { method: 'GET' },
     );
 
-    const subject =
-      existing[0]?.user_id ??
-      (
-        await this.management<{ user_id: string }>('/users', {
-          method: 'POST',
-          body: JSON.stringify({
-            email: input.email,
-            name: input.name,
-            connection: 'Username-Password-Authentication',
-            email_verified: false,
-            password: crypto.randomUUID() + 'Aa1!',
-          }),
-        })
-      ).user_id;
+    const found = existing[0];
+    let subject: string;
+    let passwordSetUrl: string | undefined;
+
+    if (found) {
+      subject = found.user_id;
+
+      /*
+       * An unverified account belongs to an invitee who never completed their ticket, so reissue
+       * one — otherwise an invite whose mail failed to send could never be repaired, since the
+       * account exists from then on. A verified user already chose a password and must not be
+       * sent an unsolicited reset just because someone typed their address.
+       */
+      if (!found.email_verified) {
+        passwordSetUrl = await this.createPasswordSetUrl(found.user_id);
+      }
+    } else {
+      /*
+       * The password here is deliberately unknowable: the invitee sets their own through the
+       * ticket below, which is also what verifies the address. Creating the account already
+       * verified would let anyone who guessed an invited address inherit the role attached to it.
+       */
+      const created = await this.management<{ user_id: string }>('/users', {
+        method: 'POST',
+        body: JSON.stringify({
+          email: input.email,
+          name: input.name,
+          connection: 'Username-Password-Authentication',
+          email_verified: false,
+          password: crypto.randomUUID() + 'Aa1!',
+        }),
+      });
+      subject = created.user_id;
+      passwordSetUrl = await this.createPasswordSetUrl(created.user_id);
+    }
 
     if (input.orgId) {
       await this.management(`/organizations/${input.orgId}/members`, {
@@ -168,7 +236,24 @@ export class Auth0Provider implements AuthProvider {
       });
     }
 
-    return { subject };
+    return { subject, passwordSetUrl };
+  }
+
+  /**
+   * Completing this ticket proves the invitee reads the address, so Auth0 marks it verified at the
+   * same time as it sets the password. That is what the API's verified-email requirement rests on.
+   */
+  private async createPasswordSetUrl(userId: string): Promise<string> {
+    const ticket = await this.management<{ ticket: string }>('/tickets/password-change', {
+      method: 'POST',
+      body: JSON.stringify({
+        user_id: userId,
+        result_url: `${env.WEB_ORIGIN}/login`,
+        mark_email_as_verified: true,
+        ttl_sec: INVITE_TTL_SECONDS,
+      }),
+    });
+    return ticket.ticket;
   }
 
   publicConfig(): Record<string, unknown> {

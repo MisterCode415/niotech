@@ -3,4 +3,6 @@ packages:
   - packages/*
 
 allowBuilds:
+  # Ships a prebuilt index.js; its postinstall is not needed for the package to work.
+  browser-tabs-lock: false
   esbuild: true

@@ -8,7 +8,7 @@ export function Register() {
   const { slug = '' } = useParams();
   const [params] = useSearchParams();
   const navigate = useNavigate();
-  const { login } = useAuth();
+  const { signInAsDev, signInWithAuth0, provider } = useAuth();
 
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
@@ -23,9 +23,17 @@ export function Register() {
     setError('');
     try {
       await api(`/api/public/${slug}/register`, { method: 'POST', body: { email, name } });
-      // Dev provider only: a real deployment would hand off to the hosted login page here.
-      await login(email);
-      navigate(packageId ? `/${slug}/checkout/${packageId}` : '/portal/orders');
+      const returnTo = packageId ? `/${slug}/checkout/${packageId}` : '/portal/orders';
+
+      if (provider === 'auth0') {
+        const handoff = await api<{ organization: string | null }>(`/api/public/${slug}/login`);
+        // Leaves the SPA, so nothing below this runs.
+        await signInWithAuth0({ organization: handoff.organization ?? undefined, returnTo });
+        return;
+      }
+
+      await signInAsDev(email);
+      navigate(returnTo);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Registration failed');
     } finally {

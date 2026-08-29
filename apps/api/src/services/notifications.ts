@@ -31,6 +31,32 @@ const transport = nodemailer.createTransport({
 });
 
 /**
+ * Sends an invitee the one-time link that sets their first password. This deliberately skips the
+ * in-app notification that other messages write: the recipient has no way to sign in and read it
+ * yet, which is the entire point of the mail.
+ *
+ * Unlike `dispatchNotifications`, a delivery failure is raised rather than logged. The link is not
+ * stored anywhere and cannot be reissued from what the caller holds, so swallowing the error would
+ * strand an account that nobody can reach.
+ */
+export async function sendInvitationEmail(input: {
+  email: string;
+  name: string;
+  url: string;
+}): Promise<void> {
+  await transport.sendMail({
+    from: env.SMTP_FROM,
+    to: input.email,
+    subject: 'Set your NIO Tech password',
+    text:
+      `Hello ${input.name},\n\n` +
+      `An account has been created for you on NIO Tech. Choose a password to activate it:\n\n` +
+      `${input.url}\n\n` +
+      `This link can be used once and expires in seven days.`,
+  });
+}
+
+/**
  * Notifications are deliberately dispatched after the clinical transaction commits: a mail server
  * being down must never roll back a lab result or a doctor's decision. In-app rows are written
  * first so the bell is correct even if SMTP fails.

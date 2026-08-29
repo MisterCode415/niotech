@@ -57,7 +57,7 @@ export function Storefront() {
               My portal
             </Link>
           ) : (
-            <Link to="/login" className="btn small">
+            <Link to={`/login?org=${slug}`} className="btn small">
               Sign in
             </Link>
           )}

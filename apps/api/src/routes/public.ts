@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { registerPatientSchema } from '@nio/shared';
 import { findPublicBusinessUnit } from '../auth/context.js';
 import { authProvider } from '../auth/index.js';
+import { sendInvitationEmail } from '../services/notifications.js';
 import { withPlatformScope, withTenant } from '../db/client.js';
 import {
   businessUnits,
@@ -28,6 +29,21 @@ export async function publicRoutes(app: FastifyInstance) {
         .orderBy(businessUnits.name),
     );
     return { businessUnits: rows };
+  });
+
+  /**
+   * Login hand-off. Auth0 needs the organization at the moment it redirects, before anyone is
+   * authenticated, so the mapping from a public slug to its organization has to be readable
+   * anonymously. Organization ids are not secret — they travel as a query parameter on the hosted
+   * login URL — and this exposes nothing that the storefront does not already publish.
+   */
+  app.get('/api/public/:slug/login', async (request) => {
+    const { slug } = slugParam.parse(request.params);
+    const businessUnit = await findPublicBusinessUnit(slug);
+    return {
+      businessUnit: { name: businessUnit.name, slug: businessUnit.slug },
+      organization: businessUnit.auth0OrgId ?? null,
+    };
   });
 
   app.get('/api/public/:slug/page', async (request) => {
@@ -99,6 +115,19 @@ export async function publicRoutes(app: FastifyInstance) {
       email: input.email,
       name: input.name,
     });
+
+    /*
+     * This endpoint is unauthenticated, so the link is only ever delivered to the address itself,
+     * never returned in the response. Registering with an address that is already verified sends
+     * nothing while still answering 201, so the reply cannot be used to enumerate accounts.
+     */
+    if (invited.passwordSetUrl) {
+      await sendInvitationEmail({
+        email: input.email,
+        name: input.name,
+        url: invited.passwordSetUrl,
+      });
+    }
 
     const result = await withPlatformScope(async (tx) => {
       const [user] = await tx

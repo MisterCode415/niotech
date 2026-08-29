@@ -7,6 +7,7 @@ import { authProvider } from '../auth/index.js';
 import { withPlatformScope } from '../db/client.js';
 import { businessUnits, memberships, orders, users } from '../db/schema.js';
 import { conflict, notFound } from '../lib/errors.js';
+import { sendInvitationEmail } from '../services/notifications.js';
 
 const idParam = z.object({ id: z.uuid() });
 
@@ -56,6 +57,18 @@ export async function platformRoutes(app: FastifyInstance) {
       email: input.adminEmail,
       name: input.adminName,
     });
+
+    /*
+     * Sent before the rows are written because the identity already exists and cannot be undone by
+     * rolling back. Failing here leaves nothing half-onboarded, and a retry reissues the link.
+     */
+    if (invited.passwordSetUrl) {
+      await sendInvitationEmail({
+        email: input.adminEmail,
+        name: input.adminName,
+        url: invited.passwordSetUrl,
+      });
+    }
 
     const created = await withPlatformScope(async (tx) => {
       const [businessUnit] = await tx

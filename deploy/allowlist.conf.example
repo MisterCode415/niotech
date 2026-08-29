@@ -3,7 +3,9 @@
 # This is the only thing standing between the open internet and a login screen that issues
 # superadmin tokens without a password. Find your address with: curl -s https://ifconfig.me
 
-allow 203.0.113.42;      # office
-# allow 198.51.100.0/24; # VPN range
+# The addresses below are RFC 5737 documentation placeholders, not real hosts. Replace them, or
+# nginx will fall through to `deny all` and lock everyone out of the app.
+allow 203.0.113.42;      # REPLACE: your address, from `curl -s https://ifconfig.me`
+# allow 198.51.100.0/24; # REPLACE or delete: a VPN or office range
 
 deny all;

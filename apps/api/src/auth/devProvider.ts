@@ -6,6 +6,7 @@ import type {
   AuthIdentity,
   CreateOrganizationInput,
   InviteUserInput,
+  InvitedUser,
 } from './provider.js';
 
 const ISSUER = 'nio-dev';
@@ -57,7 +58,8 @@ export class DevAuthProvider implements AuthProvider {
     return { orgId: `org_dev_${input.slug}` };
   }
 
-  async inviteUser(input: InviteUserInput): Promise<{ subject: string }> {
+  /** No password link: the dev provider mints tokens for any known email without one. */
+  async inviteUser(input: InviteUserInput): Promise<InvitedUser> {
     return { subject: `dev|${input.email}` };
   }
 

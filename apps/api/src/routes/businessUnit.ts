@@ -21,6 +21,7 @@ import {
   users,
 } from '../db/schema.js';
 import { badRequest, notFound } from '../lib/errors.js';
+import { sendInvitationEmail } from '../services/notifications.js';
 
 const slugParam = z.object({ slug: z.string() });
 
@@ -252,6 +253,14 @@ export async function businessUnitRoutes(app: FastifyInstance) {
       email: input.email,
       name: input.name,
     });
+
+    if (invited.passwordSetUrl) {
+      await sendInvitationEmail({
+        email: input.email,
+        name: input.name,
+        url: invited.passwordSetUrl,
+      });
+    }
 
     const member = await withPlatformScope(async (tx) => {
       const [user] = await tx

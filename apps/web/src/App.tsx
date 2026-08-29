@@ -60,6 +60,9 @@ export function App() {
     <Routes>
       <Route path="/" element={<Directory />} />
       <Route path="/login" element={<Login />} />
+      {/* Auth0 returns here with its authorization code. The SDK exchanges it during mount and
+          then redirects, so this is only ever on screen for a moment. */}
+      <Route path="/callback" element={<div className="centered">Signing in…</div>} />
       <Route path="/:slug" element={<Storefront />} />
       <Route path="/:slug/register" element={<Register />} />
 
