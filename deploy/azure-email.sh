@@ -36,9 +36,11 @@ DATA_LOCATION="${DATA_LOCATION:-UnitedStates}"
 EMAIL_SVC="${PREFIX}-email"
 ACS_NAME="${PREFIX}-acs"
 APP_NAME="${PREFIX}-smtp-relay"
-# Short, free-form. The legacy format was "<acs>|<app-id>|<tenant-id>", which ran to 90+
-# characters; a named SMTP username resource replaces it.
-SMTP_USERNAME="${SMTP_USERNAME:-${PREFIX}-mailer}"
+# Azure gives the SMTP username both an ARM resource name and the actual login value, and rejects
+# creation if those two strings are identical. Keep both short because the legacy generated login
+# could exceed SMTP clients' username limits.
+SMTP_USERNAME_RESOURCE="${SMTP_USERNAME_RESOURCE:-${PREFIX}-mailer}"
+SMTP_USERNAME="${SMTP_USERNAME:-${PREFIX}-smtp}"
 
 SECRETS_FILE="deploy/.azure-secrets"
 
@@ -163,12 +165,12 @@ fi
 # --- SMTP username -------------------------------------------------------------------------
 step "SMTP username"
 if exists az communication smtp-username show --comm-service-name "$ACS_NAME" \
-    -g "$RG" --smtp-username "$SMTP_USERNAME"; then
+    -g "$RG" --smtp-username "$SMTP_USERNAME_RESOURCE"; then
   echo "    exists"
 else
   az communication smtp-username create \
     -g "$RG" --comm-service-name "$ACS_NAME" \
-    --smtp-username "$SMTP_USERNAME" \
+    --smtp-username "$SMTP_USERNAME_RESOURCE" \
     --username "$SMTP_USERNAME" \
     --entra-application-id "$APP_ID" \
     --tenant-id "$TENANT_ID" -o none

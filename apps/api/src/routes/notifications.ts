@@ -1,20 +1,27 @@
 import type { FastifyInstance } from 'fastify';
 import { and, desc, eq, isNull } from 'drizzle-orm';
 import { z } from 'zod';
-import { requireActor } from '../auth/context.js';
+import { requireActor, sessionMemberships } from '../auth/context.js';
 import { withTenant } from '../db/client.js';
 import { notifications } from '../db/schema.js';
 import { forbidden, notFound } from '../lib/errors.js';
 
 export async function notificationRoutes(app: FastifyInstance) {
-  /** The bell. A user can hold roles in several tenants, so this reads across their memberships. */
+  /** The bell is confined to memberships usable by the token's current organization scope. */
   app.get('/api/notifications', async (request) => {
     const actor = requireActor(request);
     if (!actor.userId) return { notifications: [], unreadCount: 0 };
+    const memberships = sessionMemberships(actor);
 
     const perTenant = await Promise.all(
-      actor.memberships.map((membership) =>
-        withTenant(membership.businessUnitId, (tx) =>
+      memberships.map((membership) =>
+        withTenant(
+          {
+            businessUnitId: membership.businessUnitId,
+            userId: actor.userId!,
+            actorRole: membership.role,
+          },
+          (tx) =>
           tx
             .select()
             .from(notifications)
@@ -40,8 +47,14 @@ export async function notificationRoutes(app: FastifyInstance) {
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
     if (!actor.userId) throw forbidden();
 
-    for (const membership of actor.memberships) {
-      const [updated] = await withTenant(membership.businessUnitId, (tx) =>
+    for (const membership of sessionMemberships(actor)) {
+      const [updated] = await withTenant(
+        {
+          businessUnitId: membership.businessUnitId,
+          userId: actor.userId,
+          actorRole: membership.role,
+        },
+        (tx) =>
         tx
           .update(notifications)
           .set({ readAt: new Date() })
@@ -59,8 +72,14 @@ export async function notificationRoutes(app: FastifyInstance) {
     if (!actor.userId) throw forbidden();
 
     let updated = 0;
-    for (const membership of actor.memberships) {
-      const rows = await withTenant(membership.businessUnitId, (tx) =>
+    for (const membership of sessionMemberships(actor)) {
+      const rows = await withTenant(
+        {
+          businessUnitId: membership.businessUnitId,
+          userId: actor.userId,
+          actorRole: membership.role,
+        },
+        (tx) =>
         tx
           .update(notifications)
           .set({ readAt: new Date() })

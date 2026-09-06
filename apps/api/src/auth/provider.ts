@@ -4,6 +4,7 @@
  * and the rest of the codebase cannot drift towards vendor specifics.
  */
 export interface AuthIdentity {
+  provider: 'dev' | 'auth0';
   /** Stable provider-side subject, stored as `users.auth0_user_id`. */
   subject: string;
   email: string;

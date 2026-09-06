@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
+import { eq, sql } from 'drizzle-orm';
 import { buildApp } from '../app.js';
-import { closeDb } from '../db/client.js';
+import { closeDb, withPlatformScope, withTenant } from '../db/client.js';
+import { requireOrganizationScope, type Actor, type ActorMembership } from '../auth/context.js';
+import { devAuthProvider } from '../auth/index.js';
+import { businessUnits, orders, users } from '../db/schema.js';
 import { call, login, auth, multipartBody, SAMPLE_PDF, TEST_ADDRESS } from './harness.js';
 
 interface PackageSummary {
@@ -346,6 +350,89 @@ describe('tenant isolation', () => {
     expect(labScan.actions.map((a) => a.id)).toContain('start_processing');
 
     void orderId;
+  });
+});
+
+describe('identity and database authorization boundaries', () => {
+  it('does not rebind an existing account when a different subject asserts the same email', async () => {
+    const dev = devAuthProvider();
+    expect(dev).not.toBeNull();
+    const impostorToken = await dev!.issueToken({
+      provider: 'dev',
+      subject: 'dev|different-subject',
+      email: 'patient@vitality.test',
+      name: 'Impostor',
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/auth/me',
+      headers: auth(impostorToken),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      userId: null,
+      isPlatformAdmin: false,
+      memberships: [],
+      availableMemberships: [],
+    });
+  });
+
+  it('requires an Auth0 token organization to match the selected membership', () => {
+    const actor = {
+      identity: {
+        provider: 'auth0',
+        subject: 'auth0|person',
+        email: 'person@example.test',
+        orgId: 'org_other',
+      },
+    } as Actor;
+    const membership = {
+      auth0OrgId: 'org_expected',
+    } as ActorMembership;
+
+    expect(() => requireOrganizationScope(actor, membership)).toThrow(
+      'session is scoped to a different organization',
+    );
+  });
+
+  it('enforces patient ownership inside one tenant at the RLS layer', async () => {
+    const identity = await withPlatformScope(async (tx) => {
+      const [businessUnit] = await tx
+        .select({ id: businessUnits.id })
+        .from(businessUnits)
+        .where(eq(businessUnits.slug, 'vitality'))
+        .limit(1);
+      const [owner] = await tx
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.email, 'patient@vitality.test'))
+        .limit(1);
+      const [foreignPatient] = await tx
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.email, 'patient@metabolic.test'))
+        .limit(1);
+      return {
+        businessUnitId: businessUnit!.id,
+        ownerId: owner!.id,
+        foreignPatientId: foreignPatient!.id,
+      };
+    });
+
+    const countVisibleOrders = (userId: string, actorRole: 'patient' | 'doctor') =>
+      withTenant(
+        { businessUnitId: identity.businessUnitId, userId, actorRole },
+        async (tx) => {
+          const [result] = await tx.select({ count: sql<number>`count(*)::int` }).from(orders);
+          return result!.count;
+        },
+      );
+
+    expect(await countVisibleOrders(identity.ownerId, 'patient')).toBeGreaterThan(0);
+    expect(await countVisibleOrders(identity.foreignPatientId, 'patient')).toBe(0);
+    expect(await countVisibleOrders(identity.foreignPatientId, 'doctor')).toBeGreaterThan(0);
   });
 });
 

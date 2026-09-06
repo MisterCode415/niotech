@@ -19,7 +19,7 @@ export async function doctorRoutes(app: FastifyInstance) {
     const { slug } = slugParam.parse(request.params);
     const ctx = requireMembership(request, slug, ['doctor']);
 
-    return withTenant(ctx.businessUnitId, async (tx) => {
+    return withTenant(ctx, async (tx) => {
       const pending = await tx
         .select({
           orderId: orders.id,
@@ -59,7 +59,7 @@ export async function doctorRoutes(app: FastifyInstance) {
     const { slug, orderId } = orderParam.parse(request.params);
     const ctx = requireMembership(request, slug, ['doctor']);
 
-    const detail = await withTenant(ctx.businessUnitId, (tx) =>
+    const detail = await withTenant(ctx, (tx) =>
       getOrderDetail(tx, ctx.businessUnitId, orderId),
     );
 
@@ -76,7 +76,7 @@ export async function doctorRoutes(app: FastifyInstance) {
     const { fileId } = z.object({ fileId: z.uuid() }).parse(request.params);
     const ctx = requireMembership(request, slug, ['doctor']);
 
-    const file = await withTenant(ctx.businessUnitId, async (tx) => {
+    const file = await withTenant(ctx, async (tx) => {
       const [row] = await tx
         .select({
           storageKey: files.storageKey,
@@ -107,7 +107,7 @@ export async function doctorRoutes(app: FastifyInstance) {
     const ctx = requireMembership(request, slug, ['doctor']);
     const input = submitReviewSchema.parse(request.body);
 
-    const intents = await withTenant(ctx.businessUnitId, async (tx) => {
+    const intents = await withTenant(ctx, async (tx) => {
       const [review] = await tx
         .select()
         .from(clinicianReviews)

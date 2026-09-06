@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes, useParams } from 'react-router-dom';
 import type { MembershipRole } from '@nio/shared';
 import { useAuth } from './lib/auth';
 import { Layout } from './components/Layout';
@@ -41,8 +41,15 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
  */
 function RequireRole({ role, children }: { role: MembershipRole; children: React.ReactNode }) {
   const { me, loading } = useAuth();
+  const { slug } = useParams();
   if (loading) return <Loading />;
-  if (!me?.memberships.some((m) => m.role === role)) {
+  const matches = (membership: { role: MembershipRole; businessUnitSlug: string }) =>
+    membership.role === role && (!slug || membership.businessUnitSlug === slug);
+
+  if (!me?.memberships.some(matches)) {
+    if (me?.availableMemberships.some(matches)) {
+      return <Navigate to="/portal" replace />;
+    }
     return <Empty>You do not have access to this area.</Empty>;
   }
   return <>{children}</>;
@@ -52,6 +59,9 @@ function RequirePlatformAdmin({ children }: { children: React.ReactNode }) {
   const { me, loading } = useAuth();
   if (loading) return <Loading />;
   if (!me?.isPlatformAdmin) return <Empty>Platform administrator access required.</Empty>;
+  if (me.activeOrganizationId) {
+    return <Navigate to="/portal" replace />;
+  }
   return <>{children}</>;
 }
 

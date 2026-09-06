@@ -44,6 +44,7 @@ export class DevAuthProvider implements AuthProvider {
         throw unauthorized('Token is missing subject or email');
       }
       return {
+        provider: 'dev',
         subject: payload.sub,
         email: payload.email,
         name: typeof payload.name === 'string' ? payload.name : undefined,

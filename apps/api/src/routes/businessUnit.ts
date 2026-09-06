@@ -20,7 +20,7 @@ import {
   testTypes,
   users,
 } from '../db/schema.js';
-import { badRequest, notFound } from '../lib/errors.js';
+import { badRequest, conflict, notFound } from '../lib/errors.js';
 import { sendInvitationEmail } from '../services/notifications.js';
 
 const slugParam = z.object({ slug: z.string() });
@@ -30,7 +30,7 @@ export async function businessUnitRoutes(app: FastifyInstance) {
     const { slug } = slugParam.parse(request.params);
     const ctx = requireMembership(request, slug, ['bu_admin']);
 
-    return withTenant(ctx.businessUnitId, async (tx) => {
+    return withTenant(ctx, async (tx) => {
       const [counts] = await tx
         .select({
           totalOrders: sql<number>`count(*)::int`,
@@ -60,7 +60,7 @@ export async function businessUnitRoutes(app: FastifyInstance) {
     const { slug } = slugParam.parse(request.params);
     const ctx = requireMembership(request, slug, ['bu_admin']);
 
-    return withTenant(ctx.businessUnitId, async (tx) => {
+    return withTenant(ctx, async (tx) => {
       const versions = await tx
         .select()
         .from(marketingPages)
@@ -76,7 +76,7 @@ export async function businessUnitRoutes(app: FastifyInstance) {
     const ctx = requireMembership(request, slug, ['bu_admin']);
     const input = upsertMarketingPageSchema.parse(request.body);
 
-    return withTenant(ctx.businessUnitId, async (tx) => {
+    return withTenant(ctx, async (tx) => {
       const [latest] = await tx
         .select({ version: marketingPages.version })
         .from(marketingPages)
@@ -111,7 +111,7 @@ export async function businessUnitRoutes(app: FastifyInstance) {
     const { slug } = slugParam.parse(request.params);
     const ctx = requireMembership(request, slug, ['bu_admin', 'lab']);
 
-    return withTenant(ctx.businessUnitId, async (tx) => ({
+    return withTenant(ctx, async (tx) => ({
       testTypes: await tx.select().from(testTypes).orderBy(testTypes.name),
     }));
   });
@@ -121,7 +121,7 @@ export async function businessUnitRoutes(app: FastifyInstance) {
     const ctx = requireMembership(request, slug, ['bu_admin']);
     const input = createTestTypeSchema.parse(request.body);
 
-    const result = await withTenant(ctx.businessUnitId, async (tx) => {
+    const result = await withTenant(ctx, async (tx) => {
       const [row] = await tx
         .insert(testTypes)
         .values({ ...input, businessUnitId: ctx.businessUnitId })
@@ -138,7 +138,7 @@ export async function businessUnitRoutes(app: FastifyInstance) {
     const { slug } = slugParam.parse(request.params);
     const ctx = requireMembership(request, slug, ['bu_admin']);
 
-    return withTenant(ctx.businessUnitId, async (tx) => {
+    return withTenant(ctx, async (tx) => {
       const rows = await tx.select().from(packages).orderBy(packages.name);
       const tests = await tx
         .select({
@@ -164,7 +164,7 @@ export async function businessUnitRoutes(app: FastifyInstance) {
     const ctx = requireMembership(request, slug, ['bu_admin']);
     const input = createPackageSchema.parse(request.body);
 
-    const created = await withTenant(ctx.businessUnitId, async (tx) => {
+    const created = await withTenant(ctx, async (tx) => {
       // RLS keeps this tenant-local, but check explicitly so the error is a clear 400.
       const owned = await tx.select({ id: testTypes.id }).from(testTypes);
       const ownedIds = new Set(owned.map((t) => t.id));
@@ -207,7 +207,7 @@ export async function businessUnitRoutes(app: FastifyInstance) {
     const { status } = z.object({ status: z.enum(['draft', 'active', 'archived']) }).parse(request.body);
     const ctx = requireMembership(request, slug, ['bu_admin']);
 
-    const [updated] = await withTenant(ctx.businessUnitId, (tx) =>
+    const [updated] = await withTenant(ctx, (tx) =>
       tx.update(packages).set({ status }).where(eq(packages.id, packageId)).returning(),
     );
     if (!updated) throw notFound('Package not found');
@@ -221,7 +221,7 @@ export async function businessUnitRoutes(app: FastifyInstance) {
     const ctx = requireMembership(request, slug, ['bu_admin']);
 
     // `users` is a platform-wide table, so the join is scoped by the tenant-filtered memberships.
-    const rows = await withTenant(ctx.businessUnitId, (tx) =>
+    const rows = await withTenant(ctx, (tx) =>
       tx
         .select({
           membershipId: memberships.id,
@@ -278,6 +278,10 @@ export async function businessUnitRoutes(app: FastifyInstance) {
         .onConflictDoUpdate({ target: users.email, set: { name: input.name } })
         .returning();
 
+      if (user!.auth0UserId !== invited.subject) {
+        throw conflict('That email is already bound to a different identity');
+      }
+
       const [membership] = await tx
         .insert(memberships)
         .values({ userId: user!.id, businessUnitId: ctx.businessUnitId, role: input.role })
@@ -299,7 +303,7 @@ export async function businessUnitRoutes(app: FastifyInstance) {
     const { status } = z.object({ status: z.enum(['active', 'suspended']) }).parse(request.body);
     const ctx = requireMembership(request, slug, ['bu_admin']);
 
-    const [updated] = await withTenant(ctx.businessUnitId, (tx) =>
+    const [updated] = await withTenant(ctx, (tx) =>
       tx
         .update(memberships)
         .set({ status })
@@ -317,7 +321,7 @@ export async function businessUnitRoutes(app: FastifyInstance) {
     const { slug } = slugParam.parse(request.params);
     const ctx = requireMembership(request, slug, ['bu_admin']);
 
-    const rows = await withTenant(ctx.businessUnitId, (tx) =>
+    const rows = await withTenant(ctx, (tx) =>
       tx
         .select({
           id: orders.id,

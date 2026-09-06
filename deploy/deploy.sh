@@ -9,7 +9,8 @@ fail() { echo "error: $*" >&2; exit 1; }
 [[ -f .env.production ]] || fail "missing .env.production (copy .env.production.example and fill it in)"
 [[ -f deploy/allowlist.conf ]] || fail "missing deploy/allowlist.conf (copy deploy/allowlist.conf.example and add your IP)"
 
-grep -q 'replace-me' .env.production && fail "unreplaced 'replace-me' placeholders in .env.production"
+grep -Eq '^[A-Za-z_][A-Za-z0-9_]*=.*replace-me' .env.production &&
+  fail "unreplaced 'replace-me' placeholders in active .env.production settings"
 
 read_env() { grep -E "^$1=" .env.production | head -1 | cut -d= -f2- | tr -d '"'; }
 

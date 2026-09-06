@@ -16,6 +16,7 @@ export interface Membership {
   businessUnitId: string;
   businessUnitSlug: string;
   businessUnitName: string;
+  auth0OrgId: string | null;
   businessUnitStatus: BusinessUnitStatus;
   role: MembershipRole;
 }
@@ -25,7 +26,11 @@ export interface Me {
   name: string;
   userId: string | null;
   isPlatformAdmin: boolean;
+  activeOrganizationId: string | null;
+  /** Memberships usable by the token currently in memory. */
   memberships: Membership[];
+  /** Every workspace this identity may switch into. */
+  availableMemberships: Membership[];
 }
 
 export interface SignInOptions {
@@ -114,9 +119,12 @@ function Auth0Auth({ children }: { children: ReactNode }) {
     getAccessTokenSilently,
     loginWithRedirect,
     logout: auth0Logout,
+    user,
   } = useAuth0();
   const [me, setMe] = useState<Me | null>(null);
   const [loading, setLoading] = useState(true);
+  const activeOrganizationId =
+    typeof user?.org_id === 'string' ? (user.org_id as string) : undefined;
 
   // Declared before the profile effect so the resolver is in place by the time anything calls the
   // API. Tokens are never persisted; the SDK renews them from a refresh token held in memory.
@@ -124,13 +132,17 @@ function Auth0Auth({ children }: { children: ReactNode }) {
     setTokenResolver(async () => {
       if (!isAuthenticated) return null;
       try {
-        return await getAccessTokenSilently();
+        return await getAccessTokenSilently({
+          authorizationParams: activeOrganizationId
+            ? { organization: activeOrganizationId }
+            : undefined,
+        });
       } catch {
         return null;
       }
     });
     return () => setTokenResolver(null);
-  }, [isAuthenticated, getAccessTokenSilently]);
+  }, [isAuthenticated, getAccessTokenSilently, activeOrganizationId]);
 
   const refresh = useCallback(async () => {
     if (!isAuthenticated) {
@@ -140,7 +152,7 @@ function Auth0Auth({ children }: { children: ReactNode }) {
     }
     setMe(await fetchMe());
     setLoading(false);
-  }, [isAuthenticated]);
+  }, [isAuthenticated, activeOrganizationId]);
 
   useEffect(() => {
     if (isLoading) return;

@@ -29,7 +29,7 @@ export async function labRoutes(app: FastifyInstance) {
     const { slug } = slugParam.parse(request.params);
     const ctx = requireMembership(request, slug, ['lab']);
 
-    const rows = await withTenant(ctx.businessUnitId, (tx) =>
+    const rows = await withTenant(ctx, (tx) =>
       tx
         .select({
           kitId: kits.id,
@@ -76,7 +76,7 @@ export async function labRoutes(app: FastifyInstance) {
     const { slug, orderId } = orderParam.parse(request.params);
     const ctx = requireMembership(request, slug, ['lab']);
 
-    const detail = await withTenant(ctx.businessUnitId, (tx) =>
+    const detail = await withTenant(ctx, (tx) =>
       getOrderDetail(tx, ctx.businessUnitId, orderId),
     );
     return { ...detail, review: null };
@@ -87,7 +87,7 @@ export async function labRoutes(app: FastifyInstance) {
     const { slug, kitId } = kitParam.parse(request.params);
     const ctx = requireMembership(request, slug, ['lab']);
 
-    return withTenant(ctx.businessUnitId, async (tx) => {
+    return withTenant(ctx, async (tx) => {
       const [kit] = await tx.select().from(kits).where(eq(kits.id, kitId)).limit(1);
       if (!kit) throw notFound('Kit not found');
       if (kit.status !== 'sample_in_transit') {
@@ -133,7 +133,7 @@ export async function labRoutes(app: FastifyInstance) {
     const { slug, kitId } = kitParam.parse(request.params);
     const ctx = requireMembership(request, slug, ['lab']);
 
-    return withTenant(ctx.businessUnitId, async (tx) => {
+    return withTenant(ctx, async (tx) => {
       const [kit] = await tx.select().from(kits).where(eq(kits.id, kitId)).limit(1);
       if (!kit) throw notFound('Kit not found');
       if (kit.status !== 'received_by_lab') throw badRequest('This sample has not been checked in');
@@ -176,7 +176,7 @@ export async function labRoutes(app: FastifyInstance) {
     const storageKey = generateStorageKey(ctx.businessUnitId, upload.filename);
     await storage.put(storageKey, buffer);
 
-    const file = await withTenant(ctx.businessUnitId, async (tx) => {
+    const file = await withTenant(ctx, async (tx) => {
       // Confirms the order is in this tenant before the file is attributed to it.
       await getOrderDetail(tx, ctx.businessUnitId, orderId);
 
@@ -211,7 +211,7 @@ export async function labRoutes(app: FastifyInstance) {
     const ctx = requireMembership(request, slug, ['lab']);
     const input = completeAnalysisSchema.parse(request.body);
 
-    const outcome = await withTenant(ctx.businessUnitId, async (tx) => {
+    const outcome = await withTenant(ctx, async (tx) => {
       const [kit] = await tx.select().from(kits).where(eq(kits.id, kitId)).limit(1);
       if (!kit) throw notFound('Kit not found');
       if (!['received_by_lab', 'processing'].includes(kit.status)) {

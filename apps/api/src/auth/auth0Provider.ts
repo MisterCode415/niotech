@@ -125,13 +125,14 @@ export class Auth0Provider implements AuthProvider {
         undefined;
 
       return {
+        provider: 'auth0',
         subject: payload.sub,
         email,
         name,
         orgId: typeof payload.org_id === 'string' ? payload.org_id : undefined,
       };
     } catch (error) {
-      if (error instanceof Error && error.name === 'HttpError') throw error;
+      if (error instanceof HttpError) throw error;
       throw unauthorized('Invalid or expired token');
     }
   }

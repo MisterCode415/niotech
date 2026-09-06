@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import type { MembershipRole } from '@nio/shared';
-import { requireActor } from '../auth/context.js';
+import { requireActor, requireOrganizationScope } from '../auth/context.js';
 import { withPlatformScope, withTenant } from '../db/client.js';
 import { businessUnits, kits, orders, packages, testTypes, users } from '../db/schema.js';
 import { forbidden, notFound } from '../lib/errors.js';
@@ -92,9 +92,17 @@ export async function scanRoutes(app: FastifyInstance) {
 
     const membership = actor.memberships.find((m) => m.businessUnitId === located.businessUnitId);
     if (!membership) throw forbidden('You do not have access to this kit');
+    if (!actor.userId) throw forbidden('You do not have access to this kit');
+    requireOrganizationScope(actor, membership);
     if (membership.businessUnitStatus !== 'active') throw forbidden('This business unit is not active');
 
-    return withTenant(located.businessUnitId, async (tx) => {
+    return withTenant(
+      {
+        businessUnitId: located.businessUnitId,
+        userId: actor.userId,
+        actorRole: membership.role,
+      },
+      async (tx) => {
       const [detail] = await tx
         .select({
           kitId: kits.id,
@@ -178,6 +186,7 @@ export async function scanRoutes(app: FastifyInstance) {
           detail.kitStatus,
         ),
       };
-    });
+      },
+    );
   });
 }

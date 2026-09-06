@@ -457,6 +457,9 @@ export const fulfillmentCharges = pgTable(
     orderId: uuid('order_id')
       .notNull()
       .references(() => orders.id, { onDelete: 'cascade' }),
+    fulfillmentUserId: uuid('fulfillment_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
     fulfillmentAccountId: uuid('fulfillment_account_id').references(() => fulfillmentAccounts.id, {
       onDelete: 'set null',
     }),
@@ -467,6 +470,7 @@ export const fulfillmentCharges = pgTable(
   },
   (t) => [
     uniqueIndex('fulfillment_charges_order_key').on(t.orderId),
+    index('fulfillment_charges_user_idx').on(t.businessUnitId, t.fulfillmentUserId),
     index('fulfillment_charges_batch_idx').on(t.businessUnitId, t.status),
   ],
 );

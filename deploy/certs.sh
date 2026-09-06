@@ -19,9 +19,16 @@ $COMPOSE --profile certbot run --rm certbot certonly \
   --keep-until-expiring \
   -d "$SERVER_NAME"
 
+# Certbot writes its archive as root inside the container. Copy through another short-lived
+# container so an unprivileged deployment user does not need access to Certbot's private archive.
 # nginx reads from a fixed path so its config does not change when the hostname does.
-install -m 644 "deploy/letsencrypt/live/$SERVER_NAME/fullchain.pem" deploy/certs/fullchain.pem
-install -m 600 "deploy/letsencrypt/live/$SERVER_NAME/privkey.pem" deploy/certs/privkey.pem
+docker run --rm \
+  -v "$PWD/deploy/letsencrypt:/letsencrypt:ro" \
+  -v "$PWD/deploy/certs:/certs" \
+  alpine:3.22 sh -c "
+    install -m 644 '/letsencrypt/live/$SERVER_NAME/fullchain.pem' /certs/fullchain.pem
+    install -m 600 '/letsencrypt/live/$SERVER_NAME/privkey.pem' /certs/privkey.pem
+  "
 
 $COMPOSE exec web nginx -s reload
 

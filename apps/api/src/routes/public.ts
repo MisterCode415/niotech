@@ -6,6 +6,7 @@ import { findPublicBusinessUnit } from '../auth/context.js';
 import { authProvider } from '../auth/index.js';
 import { sendInvitationEmail } from '../services/notifications.js';
 import { withPlatformScope, withTenant } from '../db/client.js';
+import { conflict } from '../lib/errors.js';
 import {
   businessUnits,
   marketingPages,
@@ -142,6 +143,10 @@ export async function publicRoutes(app: FastifyInstance) {
         })
         .onConflictDoUpdate({ target: users.email, set: { name: input.name } })
         .returning();
+
+      if (user!.auth0UserId !== invited.subject) {
+        throw conflict('That email is already bound to a different identity');
+      }
 
       const [existing] = await tx
         .select()

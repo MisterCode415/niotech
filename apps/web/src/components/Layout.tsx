@@ -45,9 +45,17 @@ export function Layout() {
   const { me, logout } = useAuth();
 
   const items: NavItem[] = [];
-  if (me?.isPlatformAdmin) items.push({ to: '/portal/platform', label: 'Platform' });
+  if (me?.isPlatformAdmin && !me.activeOrganizationId) {
+    items.push({ to: '/portal/platform', label: 'Platform' });
+  }
   for (const membership of me?.memberships ?? []) {
     items.push(...navFor(membership.role, membership.businessUnitSlug));
+  }
+  if (
+    (me?.availableMemberships.length ?? 0) > (me?.memberships.length ?? 0) ||
+    (me?.isPlatformAdmin && Boolean(me.activeOrganizationId))
+  ) {
+    items.push({ to: '/portal', label: 'Workspaces' });
   }
 
   const seen = new Set<string>();

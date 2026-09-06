@@ -37,7 +37,7 @@ export async function fulfillmentRoutes(app: FastifyInstance) {
     const { slug } = slugParam.parse(request.params);
     const ctx = requireMembership(request, slug, ['fulfillment']);
 
-    const rows = await withTenant(ctx.businessUnitId, (tx) =>
+    const rows = await withTenant(ctx, (tx) =>
       tx
         .select({
           id: orders.id,
@@ -87,7 +87,7 @@ export async function fulfillmentRoutes(app: FastifyInstance) {
     const { slug, orderId } = orderParam.parse(request.params);
     const ctx = requireMembership(request, slug, ['fulfillment']);
 
-    const detail = await withTenant(ctx.businessUnitId, (tx) =>
+    const detail = await withTenant(ctx, (tx) =>
       getOrderDetail(tx, ctx.businessUnitId, orderId),
     );
 
@@ -111,7 +111,7 @@ export async function fulfillmentRoutes(app: FastifyInstance) {
     const ctx = requireMembership(request, slug, ['fulfillment']);
     const input = correlateOrderSchema.parse(request.body);
 
-    return withTenant(ctx.businessUnitId, async (tx) => {
+    return withTenant(ctx, async (tx) => {
       const [updated] = await tx
         .update(orders)
         .set({ externalFulfillmentId: input.externalOrderId, updatedAt: new Date() })
@@ -137,7 +137,7 @@ export async function fulfillmentRoutes(app: FastifyInstance) {
     const { slug, orderId } = orderParam.parse(request.params);
     const ctx = requireMembership(request, slug, ['fulfillment']);
 
-    return withTenant(ctx.businessUnitId, async (tx) => {
+    return withTenant(ctx, async (tx) => {
       const actor = {
         businessUnitId: ctx.businessUnitId,
         actorRole: 'fulfillment' as const,
@@ -171,7 +171,7 @@ export async function fulfillmentRoutes(app: FastifyInstance) {
     const ctx = requireMembership(request, slug, ['fulfillment']);
     const input = shipOrderSchema.parse(request.body);
 
-    const intents = await withTenant(ctx.businessUnitId, async (tx) => {
+    const intents = await withTenant(ctx, async (tx) => {
       const detail = await getOrderDetail(tx, ctx.businessUnitId, orderId);
       if (detail.order.status !== 'dispatched_to_fulfillment') {
         throw badRequest('This order is not awaiting shipment');
@@ -220,6 +220,7 @@ export async function fulfillmentRoutes(app: FastifyInstance) {
         .values({
           businessUnitId: ctx.businessUnitId,
           orderId,
+          fulfillmentUserId: ctx.userId,
           fulfillmentAccountId: account?.id ?? null,
           amountCents: FULFILLMENT_FEE_CENTS * detail.kits.length,
           status: 'pending',
@@ -251,7 +252,7 @@ export async function fulfillmentRoutes(app: FastifyInstance) {
     const ctx = requireMembership(request, slug, ['fulfillment']);
     const input = flagOrderIssueSchema.parse(request.body);
 
-    const issue = await withTenant(ctx.businessUnitId, async (tx) => {
+    const issue = await withTenant(ctx, async (tx) => {
       const [row] = await tx
         .insert(orderIssues)
         .values({
@@ -284,7 +285,7 @@ export async function fulfillmentRoutes(app: FastifyInstance) {
     const { slug } = slugParam.parse(request.params);
     const ctx = requireMembership(request, slug, ['fulfillment']);
 
-    const [account] = await withTenant(ctx.businessUnitId, (tx) =>
+    const [account] = await withTenant(ctx, (tx) =>
       tx
         .select()
         .from(fulfillmentAccounts)
@@ -300,7 +301,7 @@ export async function fulfillmentRoutes(app: FastifyInstance) {
     const ctx = requireMembership(request, slug, ['fulfillment']);
     const input = fulfillmentAccountSchema.parse(request.body);
 
-    const [account] = await withTenant(ctx.businessUnitId, (tx) =>
+    const [account] = await withTenant(ctx, (tx) =>
       tx
         .insert(fulfillmentAccounts)
         .values({ ...input, businessUnitId: ctx.businessUnitId, userId: ctx.userId })
@@ -318,7 +319,7 @@ export async function fulfillmentRoutes(app: FastifyInstance) {
     const { slug } = slugParam.parse(request.params);
     const ctx = requireMembership(request, slug, ['fulfillment']);
 
-    return withTenant(ctx.businessUnitId, async (tx) => {
+    return withTenant(ctx, async (tx) => {
       const rows = await tx
         .select({
           id: fulfillmentCharges.id,
@@ -330,6 +331,7 @@ export async function fulfillmentRoutes(app: FastifyInstance) {
         })
         .from(fulfillmentCharges)
         .innerJoin(orders, eq(orders.id, fulfillmentCharges.orderId))
+        .where(eq(fulfillmentCharges.fulfillmentUserId, ctx.userId))
         .orderBy(desc(fulfillmentCharges.createdAt))
         .limit(200);
 
@@ -347,11 +349,16 @@ export async function fulfillmentRoutes(app: FastifyInstance) {
     const ctx = requireMembership(request, slug, ['fulfillment']);
     const batchReference = `BATCH-${new Date().toISOString().slice(0, 10)}-${Date.now().toString(36).toUpperCase()}`;
 
-    const updated = await withTenant(ctx.businessUnitId, (tx) =>
+    const updated = await withTenant(ctx, (tx) =>
       tx
         .update(fulfillmentCharges)
         .set({ status: 'batched', batchReference })
-        .where(and(eq(fulfillmentCharges.status, 'pending')))
+        .where(
+          and(
+            eq(fulfillmentCharges.status, 'pending'),
+            eq(fulfillmentCharges.fulfillmentUserId, ctx.userId),
+          ),
+        )
         .returning({ id: fulfillmentCharges.id }),
     );
 

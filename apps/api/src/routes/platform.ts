@@ -88,9 +88,13 @@ export async function platformRoutes(app: FastifyInstance) {
         })
         .onConflictDoUpdate({
           target: users.email,
-          set: { name: input.adminName, auth0UserId: invited.subject },
+          set: { name: input.adminName },
         })
         .returning();
+
+      if (user!.auth0UserId !== invited.subject) {
+        throw conflict('That email is already bound to a different identity');
+      }
 
       await tx
         .insert(memberships)

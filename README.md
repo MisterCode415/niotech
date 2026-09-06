@@ -82,14 +82,18 @@ One shared schema. Every tenant-owned table carries `business_unit_id`, and isol
 twice over:
 
 - **Application** — routes resolve the business unit from the URL and confirm the caller holds an
-  accepted role in it before touching data.
+  accepted role in it. With Auth0, the access token's `org_id` must also exactly match that business
+  unit's `auth0_org_id`; database membership alone cannot cross an organization boundary.
 - **Database** — row-level security on all 16 tenant tables. The API opens a transaction, declares
-  the tenant with `set_config('app.business_unit_id', ...)`, and Postgres filters from there. Code
-  paths that legitimately span tenants (migrations, seeding, platform superadmin, QR token lookup)
-  set `app.tenant_scope` to `platform` instead, and that list is deliberately short.
+  the tenant, authenticated user, and role with transaction-local `set_config(...)` calls, and
+  Postgres filters from there. Patient-owned orders and clinical files are restricted to that
+  patient; result tables remain hidden until release; billing and notifications have role/owner
+  policies. Code paths that legitimately span tenants set `app.tenant_scope` to `platform`, and
+  that list is deliberately short.
 
-`FORCE ROW LEVEL SECURITY` is set because the application connects as the table owner, who would
-otherwise bypass policies.
+The long-running API connects as the `nio_app` role, which is both `NOSUPERUSER` and `NOBYPASSRLS`.
+The administrator credential exists only in the disposable migration process. `FORCE ROW LEVEL
+SECURITY` remains enabled as defense in depth.
 
 ### Order state machine
 
@@ -110,6 +114,13 @@ identity provider: verify a token, create an organization, invite a user. Two im
 - `dev` — signs local HS256 tokens. Default.
 - `auth0` — JWKS verification plus the Management API. A business unit maps one-to-one onto an
   Auth0 Organization.
+
+One Auth0 identity can be a member of several Organizations and hold a different application role
+in each. Selecting a workspace obtains an organization-scoped token; tenant APIs reject unscoped
+tokens and tokens issued for another organization. Switching workspaces performs another Auth0
+authorization redirect, normally without another password prompt because the Auth0 session remains
+active. Identity rows bind permanently to Auth0's immutable `sub`; email is used only once to bind
+an explicitly pre-seeded row and can never replace an existing subject.
 
 Switch with `AUTH_PROVIDER` in `.env`. For Auth0, also set `AUTH0_DOMAIN`, `AUTH0_AUDIENCE`,
 `AUTH0_SPA_CLIENT_ID`, `AUTH0_M2M_CLIENT_ID` and `AUTH0_M2M_CLIENT_SECRET`.
@@ -163,6 +174,8 @@ scratch work.
   cannot see results before release;
 - the direct-to-patient branch, asserting it never enters the doctor queue;
 - tenant isolation across orders, portals, roles and QR scans;
+- immutable identity binding, exact Auth0 organization matching, and patient ownership enforced
+  directly by PostgreSQL RLS;
 - a transition that skips a step being rejected.
 
 ## Deploying

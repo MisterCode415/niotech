@@ -37,7 +37,7 @@ export async function patientRoutes(app: FastifyInstance) {
     const { slug } = slugParam.parse(request.params);
     const ctx = requireMembership(request, slug, ['patient']);
 
-    const rows = await withTenant(ctx.businessUnitId, (tx) =>
+    const rows = await withTenant(ctx, (tx) =>
       tx
         .select({
           id: orders.id,
@@ -63,7 +63,7 @@ export async function patientRoutes(app: FastifyInstance) {
     const ctx = requireMembership(request, slug, ['patient']);
     const input = createOrderSchema.parse(request.body);
 
-    const order = await withTenant(ctx.businessUnitId, async (tx) => {
+    const order = await withTenant(ctx, async (tx) => {
       const [pkg] = await tx
         .select()
         .from(packages)
@@ -112,7 +112,7 @@ export async function patientRoutes(app: FastifyInstance) {
     const ctx = requireMembership(request, slug, ['patient']);
     const input = payOrderSchema.parse(request.body ?? {});
 
-    const { status, intents } = await withTenant(ctx.businessUnitId, async (tx) => {
+    const { status, intents } = await withTenant(ctx, async (tx) => {
       const [order] = await tx
         .select()
         .from(orders)
@@ -207,7 +207,7 @@ export async function patientRoutes(app: FastifyInstance) {
     const { slug, orderId } = orderParam.parse(request.params);
     const ctx = requireMembership(request, slug, ['patient']);
 
-    const detail = await withTenant(ctx.businessUnitId, (tx) =>
+    const detail = await withTenant(ctx, (tx) =>
       getOrderDetail(tx, ctx.businessUnitId, orderId),
     );
     if (detail.order.patientId !== ctx.userId) throw forbidden('This order belongs to another patient');
@@ -228,7 +228,14 @@ export async function patientRoutes(app: FastifyInstance) {
     const { slug, orderId, kitId } = kitParam.parse(request.params);
     const ctx = requireMembership(request, slug, ['patient']);
 
-    return withTenant(ctx.businessUnitId, async (tx) => {
+    return withTenant(ctx, async (tx) => {
+      const [ownedOrder] = await tx
+        .select({ id: orders.id })
+        .from(orders)
+        .where(and(eq(orders.id, orderId), eq(orders.patientUserId, ctx.userId)))
+        .limit(1);
+      if (!ownedOrder) throw notFound('Kit not found');
+
       const [kit] = await tx
         .select()
         .from(kits)
@@ -263,7 +270,14 @@ export async function patientRoutes(app: FastifyInstance) {
     const { slug, orderId, kitId } = kitParam.parse(request.params);
     const ctx = requireMembership(request, slug, ['patient']);
 
-    return withTenant(ctx.businessUnitId, async (tx) => {
+    return withTenant(ctx, async (tx) => {
+      const [ownedOrder] = await tx
+        .select({ id: orders.id })
+        .from(orders)
+        .where(and(eq(orders.id, orderId), eq(orders.patientUserId, ctx.userId)))
+        .limit(1);
+      if (!ownedOrder) throw notFound('Kit not found');
+
       const [kit] = await tx
         .select()
         .from(kits)
@@ -312,7 +326,7 @@ export async function patientRoutes(app: FastifyInstance) {
     const { fileId } = z.object({ fileId: z.uuid() }).parse(request.params);
     const ctx = requireMembership(request, slug, ['patient']);
 
-    const file = await withTenant(ctx.businessUnitId, async (tx) => {
+    const file = await withTenant(ctx, async (tx) => {
       const [order] = await tx
         .select({ id: orders.id, status: orders.status, patientUserId: orders.patientUserId })
         .from(orders)

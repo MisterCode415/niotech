@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
 import { devLoginSchema } from '@nio/shared';
 import { authProvider, devAuthProvider } from '../auth/index.js';
-import { requireActor } from '../auth/context.js';
+import { requireActor, sessionMemberships } from '../auth/context.js';
 import { withPlatformScope } from '../db/client.js';
 import { platformAdmins, users } from '../db/schema.js';
 import { forbidden, notFound } from '../lib/errors.js';
@@ -44,6 +44,7 @@ export async function authRoutes(app: FastifyInstance) {
       if (!known) throw notFound('No account exists for that email');
 
       const token = await dev.issueToken({
+        provider: 'dev',
         subject: `dev|${known.email}`,
         email: known.email,
         name: known.name,
@@ -55,12 +56,17 @@ export async function authRoutes(app: FastifyInstance) {
 
   app.get('/api/auth/me', async (request) => {
     const actor = requireActor(request);
+    const activeOrganizationId = actor.identity.orgId ?? null;
+    const memberships = sessionMemberships(actor);
+
     return {
       email: actor.email,
       name: actor.name,
       userId: actor.userId,
       isPlatformAdmin: actor.isPlatformAdmin,
-      memberships: actor.memberships,
+      activeOrganizationId,
+      memberships,
+      availableMemberships: actor.memberships,
     };
   });
 }

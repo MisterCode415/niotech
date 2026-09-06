@@ -1,6 +1,7 @@
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { sql } from 'drizzle-orm';
 import postgres from 'postgres';
+import type { ActorRole } from '@nio/shared';
 import { env } from '../env.js';
 import * as schema from './schema.js';
 
@@ -14,14 +15,35 @@ export const db = drizzle(queryClient, { schema });
 export type Db = typeof db;
 export type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
 
+export interface TenantDatabaseContext {
+  businessUnitId: string;
+  userId: string;
+  actorRole: ActorRole;
+}
+
 /**
  * Every tenant-owned table carries a `business_unit_id` and an RLS policy keyed on
- * `app.business_unit_id`. Reads and writes therefore have to happen inside a transaction
- * that has declared which tenant it is acting for; there is no ambient default.
+ * transaction-local tenant, user, and role settings. Passing only an id is reserved for trusted
+ * server work (public catalog reads and post-commit notifications); request handlers pass their
+ * authenticated TenantContext so role-aware policies can enforce the same boundary as the API.
  */
-export async function withTenant<T>(businessUnitId: string, fn: (tx: Tx) => Promise<T>): Promise<T> {
+export async function withTenant<T>(
+  scope: string | TenantDatabaseContext,
+  fn: (tx: Tx) => Promise<T>,
+): Promise<T> {
+  const context =
+    typeof scope === 'string'
+      ? { businessUnitId: scope, userId: '', actorRole: 'system' as const }
+      : scope;
+
   return db.transaction(async (tx) => {
-    await tx.execute(sql`select set_config('app.business_unit_id', ${businessUnitId}, true)`);
+    await tx.execute(sql`
+      select
+        set_config('app.business_unit_id', ${context.businessUnitId}, true),
+        set_config('app.user_id', ${context.userId}, true),
+        set_config('app.actor_role', ${context.actorRole}, true),
+        set_config('app.tenant_scope', '', true)
+    `);
     return fn(tx);
   });
 }
@@ -32,7 +54,13 @@ export async function withTenant<T>(businessUnitId: string, fn: (tx: Tx) => Prom
  */
 export async function withPlatformScope<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
   return db.transaction(async (tx) => {
-    await tx.execute(sql`select set_config('app.tenant_scope', 'platform', true)`);
+    await tx.execute(sql`
+      select
+        set_config('app.tenant_scope', 'platform', true),
+        set_config('app.business_unit_id', '', true),
+        set_config('app.user_id', '', true),
+        set_config('app.actor_role', 'platform_admin', true)
+    `);
     return fn(tx);
   });
 }

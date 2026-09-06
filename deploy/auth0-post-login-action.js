@@ -1,3 +1,5 @@
+/* global exports */
+
 /**
  * Auth0 post-login Action. Deploy into the tenant that AUTH0_DOMAIN points at.
  *
