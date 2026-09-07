@@ -6,9 +6,10 @@
   \quit
 \endif
 
--- Run this as the database administrator after migrations. The API must use this login instead of
--- the owner/admin login: PostgreSQL superusers and BYPASSRLS roles ignore row-level security even
--- when a table uses FORCE ROW LEVEL SECURITY.
+-- Run this as the database administrator before the first deployment or after migrations. Default
+-- privileges cover objects created later by the same migration role. The API must use this login
+-- instead of the owner/admin login: PostgreSQL superusers and BYPASSRLS roles ignore row-level
+-- security even when a table uses FORCE ROW LEVEL SECURITY.
 SELECT format(
   'CREATE ROLE nio_app LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION',
   :'app_password'

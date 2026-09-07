@@ -7,7 +7,6 @@ cd "$(dirname "$0")/.."
 fail() { echo "error: $*" >&2; exit 1; }
 
 [[ -f .env.production ]] || fail "missing .env.production (copy .env.production.example and fill it in)"
-[[ -f deploy/allowlist.conf ]] || fail "missing deploy/allowlist.conf (copy deploy/allowlist.conf.example and add your IP)"
 
 grep -Eq '^[A-Za-z_][A-Za-z0-9_]*=.*replace-me' .env.production &&
   fail "unreplaced 'replace-me' placeholders in active .env.production settings"

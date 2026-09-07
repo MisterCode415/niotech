@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Provision the Azure resources for a NIO Tech deployment:
+# Provision the Azure resources for a Qinio deployment:
 #
-#   VNet ─┬─ app subnet  ── NSG (80/443/22 from ADMIN_CIDR only) ── Ubuntu VM ── public IP
+#   VNet ─┬─ app subnet  ── NSG (80/443 public; 22 from ADMIN_CIDR) ── Ubuntu VM ── public IP
 #         └─ db subnet   ── delegated ── PostgreSQL Flexible Server (private, no public endpoint)
 #
 # Re-runnable: every step is skipped if the resource already exists.
@@ -64,8 +64,9 @@ command -v az >/dev/null || fail "the Azure CLI is not installed"
 az account show >/dev/null 2>&1 || fail "not logged in; run: az login"
 [[ -f "$SSH_KEY" ]] || fail "no SSH public key at $SSH_KEY (generate one with ssh-keygen, or set SSH_KEY)"
 
-# Everything is locked to this address range. Without it the deployment would be reachable by
-# anyone, and the login endpoint issues superadmin tokens without a password.
+# Only SSH is locked to this address range. HTTPS is public so customers can reach Auth0 and their
+# organization workspace; API authorization is enforced by verified tokens, roles, org scope, and
+# PostgreSQL RLS.
 if [[ -z "${ADMIN_CIDR:-}" ]]; then
   DETECTED="$(curl -fsS https://ifconfig.me 2>/dev/null || true)"
   [[ -n "$DETECTED" ]] || fail "could not detect your IP; set ADMIN_CIDR explicitly (e.g. ADMIN_CIDR=203.0.113.42/32)"
@@ -148,7 +149,7 @@ echo
 echo "Subscription: $(az account show --query name -o tsv)"
 echo "Resource group: $RG    Location: $LOCATION"
 echo "VM: $VM_NAME ($VM_SIZE)    Postgres: $PG_NAME ($PG_SKU, v$PG_VERSION)"
-echo "Inbound access restricted to: $ADMIN_CIDR"
+echo "SSH access restricted to: $ADMIN_CIDR"
 echo
 read -r -p "Create these resources? [y/N] " confirm
 [[ "$confirm" == "y" || "$confirm" == "Y" ]] || exit 0
@@ -223,21 +224,18 @@ if exists az network nsg show -g "$RG" -n "$NSG"; then
   echo "    exists"
 else
   az network nsg create -g "$RG" -n "$NSG" -l "$LOCATION" -o none
-  # Port 80 stays open to the world so Let's Encrypt can validate on renewal without anyone
-  # editing firewall rules on a schedule. It is safe because the nginx server block on 80 only
-  # serves ACME challenge files and a redirect: no app content and no API are reachable there.
-  az network nsg rule create -g "$RG" --nsg-name "$NSG" -n allow-acme \
-    --priority 100 --direction Inbound --access Allow --protocol Tcp \
-    --source-address-prefixes Internet --destination-port-ranges 80 -o none
-  # The application itself is restricted, because the login endpoint issues superadmin tokens
-  # without a password while AUTH_PROVIDER=dev.
-  az network nsg rule create -g "$RG" --nsg-name "$NSG" -n allow-https \
-    --priority 110 --direction Inbound --access Allow --protocol Tcp \
-    --source-address-prefixes "$ADMIN_CIDR" --destination-port-ranges 443 -o none
-  az network nsg rule create -g "$RG" --nsg-name "$NSG" -n allow-ssh \
-    --priority 120 --direction Inbound --access Allow --protocol Tcp \
-    --source-address-prefixes "$ADMIN_CIDR" --destination-port-ranges 22 -o none
 fi
+# Converge existing groups as well as new ones. Port 80 serves only ACME challenges and redirects;
+# port 443 serves the public application. Administrative SSH remains private.
+az network nsg rule create -g "$RG" --nsg-name "$NSG" -n allow-acme \
+  --priority 100 --direction Inbound --access Allow --protocol Tcp \
+  --source-address-prefixes Internet --destination-port-ranges 80 -o none
+az network nsg rule create -g "$RG" --nsg-name "$NSG" -n allow-https \
+  --priority 110 --direction Inbound --access Allow --protocol Tcp \
+  --source-address-prefixes Internet --destination-port-ranges 443 -o none
+az network nsg rule create -g "$RG" --nsg-name "$NSG" -n allow-ssh \
+  --priority 120 --direction Inbound --access Allow --protocol Tcp \
+  --source-address-prefixes "$ADMIN_CIDR" --destination-port-ranges 22 -o none
 az network vnet subnet update -g "$RG" --vnet-name "$VNET" -n "$APP_SUBNET" \
   --network-security-group "$NSG" -o none
 
@@ -321,7 +319,7 @@ Provisioned.
 
   VM public IP   $VM_IP
   Postgres       $PG_FQDN (private; no public endpoint)
-  Inbound        443 and 22 from $ADMIN_CIDR only; 80 open for ACME challenges
+  Inbound        80/443 public; SSH from $ADMIN_CIDR only
 
 Next:
 
@@ -336,7 +334,6 @@ Next:
    ssh ${VM_ADMIN}@${VM_IP}
    git clone <your-repo> nio-platform && cd nio-platform
    cp .env.production.example .env.production      # fill in, including the URL above
-   cp deploy/allowlist.conf.example deploy/allowlist.conf
    ./deploy/deploy.sh
    ./deploy/certs.sh
 
@@ -344,7 +341,7 @@ Next:
 
    ./deploy/azure-email.sh
 
-Put $ADMIN_CIDR in deploy/allowlist.conf too. The NSG and nginx gate the same traffic on
-purpose: with the passwordless login enabled, one misconfigured layer should not be enough.
+Production refuses to boot with the passwordless development auth provider. Keep SSH restricted,
+but do not IP-gate HTTPS: invited users must be able to reach the Auth0 login flow.
 ────────────────────────────────────────────────────────────────────────────
 SUMMARY

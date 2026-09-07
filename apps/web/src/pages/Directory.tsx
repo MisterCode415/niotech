@@ -14,7 +14,7 @@ export function Directory() {
     <div className="page">
       <div className="hero">
         <h1>
-          NIO<span style={{ color: 'var(--accent)' }}>Tech</span> storefronts
+          Qin<span style={{ color: 'var(--accent)' }}>io</span> storefronts
         </h1>
         <p className="muted">
           Every business unit runs its own storefront, packages and clinical roster on shared

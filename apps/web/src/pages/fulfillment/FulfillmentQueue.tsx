@@ -58,7 +58,7 @@ export function FulfillmentQueue() {
           <table>
             <thead>
               <tr>
-                <th>NIO order</th>
+                <th>Qinio order</th>
                 <th>Your reference</th>
                 <th>Recipient</th>
                 <th>Kits</th>

@@ -41,7 +41,7 @@ const envSchema = z.object({
 
   SMTP_HOST: z.string().default('localhost'),
   SMTP_PORT: z.coerce.number().default(1025),
-  SMTP_FROM: z.string().default('NIO Tech <no-reply@niotech.test>'),
+  SMTP_FROM: z.string().default('Qinio <no-reply@niotech.test>'),
   // Omitted for local capture (Mailpit accepts anything); required by every hosted relay.
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
@@ -84,13 +84,13 @@ function assertDeployableConfig(): void {
 
   const problems: string[] = [];
 
-  if (env.AUTH_PROVIDER === 'dev' && !env.ALLOW_DEV_AUTH) {
+  if (env.AUTH_PROVIDER === 'dev') {
     problems.push(
-      'AUTH_PROVIDER=dev issues tokens for any known email without a password. Set ALLOW_DEV_AUTH=true ' +
-        'to confirm this is intended and keep the deployment private, or set AUTH_PROVIDER=auth0.',
+      'AUTH_PROVIDER=dev issues tokens for any known email without a password and cannot be used ' +
+        'in production. Configure Auth0 before exposing the application.',
     );
   }
-  if (env.DEV_AUTH_SECRET === DEFAULT_DEV_SECRET) {
+  if (env.AUTH_PROVIDER === 'dev' && env.DEV_AUTH_SECRET === DEFAULT_DEV_SECRET) {
     problems.push(
       'DEV_AUTH_SECRET is still the committed default. Generate one with: openssl rand -base64 48',
     );

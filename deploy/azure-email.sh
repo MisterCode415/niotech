@@ -188,7 +188,7 @@ SMTP_HOST=smtp.azurecomm.net
 SMTP_PORT=587
 SMTP_USER=${SMTP_USERNAME}
 SMTP_PASS=${APP_SECRET}
-SMTP_FROM="NIO Tech <donotreply@${SENDER_DOMAIN}>"
+SMTP_FROM="Qinio <donotreply@${SENDER_DOMAIN}>"
 
 Credentials are also in $SECRETS_FILE (gitignored, chmod 600).
 

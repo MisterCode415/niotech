@@ -50,38 +50,60 @@ function escapeHtml(value: string): string {
 export async function sendInvitationEmail(input: {
   email: string;
   name: string;
-  passwordSetUrl: string;
+  passwordSetUrl?: string;
   signInUrl: string;
+  workspaceName?: string;
+  roleLabel?: string;
 }): Promise<void> {
-  await transport.sendMail({
+  const assignment = input.workspaceName
+    ? `${input.roleLabel ?? 'member'} of ${input.workspaceName}`
+    : 'Qinio platform administrator';
+  const needsActivation = Boolean(input.passwordSetUrl);
+
+  const result = await transport.sendMail({
     from: env.SMTP_FROM,
     to: input.email,
-    subject: 'Your NIO Tech account is ready',
+    subject: needsActivation
+      ? 'Your Qinio account is ready'
+      : `You've been added to ${input.workspaceName ?? 'Qinio'}`,
     text:
       `Hello ${input.name},\n\n` +
-      `An account has been created for you on NIO Tech. Set your password and activate your account:\n\n` +
-      `${input.passwordSetUrl}\n\n` +
-      `The activation link can be used once and expires in seven days. After activation, sign in here:\n\n` +
+      `You have been added as ${assignment}.\n\n` +
+      (needsActivation
+        ? `Set your password and activate your account:\n\n${input.passwordSetUrl}\n\n` +
+          `The activation link can be used once and expires in seven days.\n\n`
+        : '') +
+      `Sign in here:\n\n` +
       `${input.signInUrl}`,
     html: `
       <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;color:#17202a">
-        <h1 style="font-size:24px">Your NIO Tech account is ready</h1>
+        <h1 style="font-size:24px">${
+          needsActivation ? 'Your Qinio account is ready' : "You've been added to Qinio"
+        }</h1>
         <p>Hello ${escapeHtml(input.name)},</p>
-        <p>An account has been created for you on NIO Tech.</p>
-        <p style="margin:28px 0">
-          <a href="${escapeHtml(input.passwordSetUrl)}"
-             style="background:#2563eb;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none">
-            Set password and activate account
-          </a>
-        </p>
-        <p style="font-size:13px;color:#5f6b76">
-          The activation link can be used once and expires in seven days.
-        </p>
-        <p>After activation, you can always sign in at:</p>
+        <p>You have been added as ${escapeHtml(assignment)}.</p>
+        ${
+          needsActivation
+            ? `<p style="margin:28px 0">
+                 <a href="${escapeHtml(input.passwordSetUrl!)}"
+                    style="background:#2563eb;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none">
+                   Set password and activate account
+                 </a>
+               </p>
+               <p style="font-size:13px;color:#5f6b76">
+                 The activation link can be used once and expires in seven days.
+               </p>`
+            : ''
+        }
+        <p>${needsActivation ? 'After activation, sign in at:' : 'Sign in at:'}</p>
         <p><a href="${escapeHtml(input.signInUrl)}">${escapeHtml(input.signInUrl)}</a></p>
       </div>
     `,
   });
+
+  // SMTP acceptance is the strongest synchronous guarantee available. Final inbox delivery,
+  // bounce, and complaint events require the relay's asynchronous event feed.
+  console.info(`Invitation email accepted by SMTP relay (${result.messageId})`);
 }
 
 /**

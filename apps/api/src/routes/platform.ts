@@ -59,16 +59,14 @@ export async function platformRoutes(app: FastifyInstance) {
       loginPath: `/login?org=${encodeURIComponent(input.slug)}`,
     });
 
-    /*
-     * Sent before the rows are written because the identity already exists and cannot be undone by
-     * rolling back. Failing here leaves nothing half-onboarded, and a retry reissues the link.
-     */
-    if (invited.passwordSetUrl && invited.signInUrl) {
+    if (invited.signInUrl) {
       await sendInvitationEmail({
         email: input.adminEmail,
         name: input.adminName,
         passwordSetUrl: invited.passwordSetUrl,
         signInUrl: invited.signInUrl,
+        workspaceName: input.name,
+        roleLabel: 'Business Unit Admin',
       });
     }
 

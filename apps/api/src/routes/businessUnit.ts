@@ -5,6 +5,7 @@ import {
   createMemberSchema,
   createPackageSchema,
   createTestTypeSchema,
+  ROLE_LABELS,
   upsertMarketingPageSchema,
 } from '@nio/shared';
 import { requireMembership } from '../auth/context.js';
@@ -249,20 +250,23 @@ export async function businessUnitRoutes(app: FastifyInstance) {
     const [businessUnit] = await withPlatformScope((tx) =>
       tx.select().from(businessUnits).where(eq(businessUnits.id, ctx.businessUnitId)).limit(1),
     );
+    if (!businessUnit) throw notFound('Business unit not found');
 
     const invited = await authProvider().inviteUser({
-      orgId: businessUnit?.auth0OrgId ?? null,
+      orgId: businessUnit.auth0OrgId,
       email: input.email,
       name: input.name,
       loginPath: `/login?org=${encodeURIComponent(slug)}`,
     });
 
-    if (invited.passwordSetUrl && invited.signInUrl) {
+    if (invited.signInUrl) {
       await sendInvitationEmail({
         email: input.email,
         name: input.name,
         passwordSetUrl: invited.passwordSetUrl,
         signInUrl: invited.signInUrl,
+        workspaceName: businessUnit.name,
+        roleLabel: ROLE_LABELS[input.role],
       });
     }
 

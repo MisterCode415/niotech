@@ -1,4 +1,4 @@
-# NIO Tech Platform
+# Qinio Platform
 
 A multi-tenant testing and lab workflow platform. A patient buys a package, a fulfillment partner
 ships a kit, the patient mails a sample, a lab analyses it, and — depending on the package — a
@@ -184,9 +184,13 @@ The target is a single Ubuntu VM running two containers — nginx serving the bu
 `/api` to Fastify — with PostgreSQL as a managed instance on a private network. The API publishes no
 host port, and the database has no public endpoint at all.
 
+For a copy/paste operations cookbook—including inspection, recovery, and one-off Azure/Auth0
+commands—see [`COMMANDS.md`](COMMANDS.md). This README explains the intended sequence and security
+model; the command reference records how to operate it.
+
 ```
         internet
-           │  443 (your IP only)          80 (open, ACME challenges only)
+           │  443 (public HTTPS)          80 (ACME + HTTPS redirect)
            ▼
    ┌───────────────┐        ┌───────────────────────────────┐
    │ nginx (web)   │──/api──▶│ Fastify (api) + PHI volume    │
@@ -202,15 +206,13 @@ plain Docker Compose and runs on any Ubuntu host.
 
 ### Before the first deploy
 
-**This deployment must not be reachable from the open internet.** With `AUTH_PROVIDER=dev` the login
-endpoint issues a valid token for any known email with no password, so anyone who can reach the API
-can become the platform superadmin. `deploy/allowlist.conf` is what prevents that, and the API
-refuses to start in production unless `ALLOW_DEV_AUTH=true` says you accepted the tradeoff. Set
-`AUTH_PROVIDER=auth0` to remove the passwordless path entirely.
+HTTPS is public so invited users, storefront visitors, and Auth0 callbacks work without per-user
+network configuration. Production therefore refuses to start with the passwordless development
+auth provider. Configure Auth0 before deployment; tenant access is enforced by Auth0 organization
+scope, application membership and role checks, and PostgreSQL RLS.
 
-HTTP basic auth is deliberately *not* used as the gate. The SPA sends `Authorization: Bearer` on
-every API call, which replaces the browser's `Authorization: Basic` header, so nginx would reject
-every request. An IP allowlist has no such conflict and covers the API as well as the SPA.
+Only SSH is IP-restricted at the Azure NSG. If an additional edge gate becomes necessary, use an
+identity-aware proxy or WAF policy that accommodates customers—not a list of residential IPs.
 
 ### Provisioning Azure
 
@@ -263,46 +265,147 @@ The VM is built from `deploy/cloud-init.yaml`, which installs Docker, enables `u
 swap — the web image build runs `tsc` plus Vite and wants roughly 2GB, which is uncomfortably close
 to a 4GB VM's limit without it.
 
-### On the server
+### First deployment
+
+Complete these steps in order. The certificate and Auth0 callback both depend on DNS, so create an
+`A` record for the chosen application hostname pointing at the VM public IP before starting. Check
+propagation from your workstation:
+
+```bash
+dig +short A dev.example.com
+```
+
+It must print the VM public IP.
+
+On the server, clone the source and create the uncommitted production environment:
 
 ```bash
 git clone <your-repo> nio-platform && cd nio-platform
-
 cp .env.production.example .env.production
-cp deploy/allowlist.conf.example deploy/allowlist.conf
+```
 
-# Keep the administrator URL printed by provisioning out of .env.production. Create the restricted
-# runtime login with a URL-safe password, then put its nio_app URL in .env.production.
+Configure `.env.production` with:
+
+- `SERVER_NAME`, `WEB_ORIGIN` and `API_PUBLIC_URL` set to the same HTTPS hostname;
+- `AUTH_PROVIDER=auth0` and all five `AUTH0_*` values, including a **non-empty M2M client secret**;
+- `PLATFORM_ADMIN_EMAIL`;
+- a restricted `nio_app` `DATABASE_URL`, not the PostgreSQL administrator URL;
+- working SMTP settings from the email step below.
+
+The Auth0 SPA application must allow the deployed URL in **Allowed Callback URLs**
+(`https://<host>/callback`), **Allowed Logout URLs** (`https://<host>`), and **Allowed Web Origins**
+(`https://<host>`). It must allow Organizations (`organization_usage=allow`, with
+`organization_require_behavior=no_prompt`). The API audience must exactly match
+`AUTH0_AUDIENCE`, and the post-login Action in `deploy/auth0-post-login-action.js` must be deployed
+and bound to the login flow. The M2M application's Auth0 Management API grant needs only:
+
+- `create:organizations` and `read:organizations`;
+- `read:connections` and `create:organization_connections`;
+- `read:users`, `create:users`, `create:user_tickets`;
+- `create:organization_members`.
+
+Its secret belongs only in `.env.production`, never in the SPA or Git.
+
+Provision test email from the workstation after Azure infrastructure exists:
+
+```bash
+./deploy/azure-email.sh
+```
+
+Copy the emitted `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` and `SMTP_FROM` settings into
+the server's `.env.production`. The generated Entra secret expires after one year.
+
+Keep the administrator database URL outside `.env.production`. Create the RLS-restricted runtime
+role from the server, which can reach the private database:
+
+```bash
 export ADMIN_DATABASE_URL='postgres://nioadmin:...@.../nio?sslmode=require'
 export APP_DATABASE_PASSWORD="$(openssl rand -hex 32)"
 docker run --rm -i postgres:17-alpine psql "$ADMIN_DATABASE_URL" \
   -v app_password="$APP_DATABASE_PASSWORD" < deploy/create-app-db-role.sql
-
-# Fill in .env.production: hostname, the nio_app DATABASE_URL, and a fresh secret for each value
-# marked replace-me. Keep APP_DATABASE_PASSWORD somewhere secure.
-openssl rand -base64 48   # DEV_AUTH_SECRET
-
-# Put your own address in the allowlist, or nothing will be reachable.
-curl -s https://ifconfig.me
-
-MIGRATION_DATABASE_URL="$ADMIN_DATABASE_URL" ./deploy/deploy.sh
-./deploy/certs.sh      # replaces the self-signed placeholder with Let's Encrypt
 ```
 
-Point the DNS A record at the VM's public IP first, or certificate issuance will fail.
+Put the equivalent URL using username `nio_app` and `APP_DATABASE_PASSWORD` into
+`DATABASE_URL`. Store both generated credentials in the password manager. Then build, migrate,
+bootstrap and start the application:
 
-Then sign in as `PLATFORM_ADMIN_EMAIL` and create the first business unit. Redeploying a change is
-`git pull && MIGRATION_DATABASE_URL="$ADMIN_DATABASE_URL" ./deploy/deploy.sh`. The administrator URL
-is passed only to the disposable migration container; the running API receives only the restricted
-`nio_app` credential and therefore cannot bypass row-level security.
+```bash
+MIGRATION_DATABASE_URL="$ADMIN_DATABASE_URL" ./deploy/deploy.sh
+./deploy/certs.sh
+```
 
-### Why port 80 is open to everyone
+`deploy.sh` passes the administrator credential only to a disposable migration container. The
+long-running API receives only the `nio_app` credential and cannot bypass row-level security.
+`certs.sh` replaces the initial self-signed certificate with Let's Encrypt after DNS resolves.
 
-The NSG restricts 443 and 22 to your address but leaves 80 open. That is deliberate: Let's Encrypt
-has to reach port 80 to validate on every renewal, and the alternative is widening a firewall rule
-on a schedule, which eventually gets forgotten in the open position. It is safe because the nginx
-server block on port 80 contains only the ACME challenge location and a redirect to HTTPS — no
-application content and no API routes are reachable there. The IP allowlist lives in the 443 block.
+#### Alpha platform-admin bootstrap
+
+There is deliberately no public “create alpha account” page and the production demo seed must
+never be used. The platform administrator is the root of trust for every business unit, so
+`.env.production` is the only place that names who receives that authority:
+
+```dotenv
+PLATFORM_ADMIN_EMAIL=owner@example.com
+```
+
+During every `deploy.sh`, the idempotent `db:bootstrap` step:
+
+1. finds or creates that user in Auth0 without assigning an Organization;
+2. creates or activates the matching `platform_admins` row;
+3. binds the row to Auth0's immutable user subject, not merely the email address;
+4. deactivates every other platform-admin row while the product is in its single-alpha-admin phase;
+5. emails a seven-day password-setup link when the Auth0 account is new or still awaiting
+   activation.
+
+This is identity provisioning, not sample-data seeding. If the Auth0 account already exists and is
+activated, no password is changed and no invitation is sent; the existing account can sign in at
+`https://<host>/login`. Re-running the bootstrap is safe and reissues an activation ticket only
+while a Qinio-created invitation remains incomplete.
+
+To transfer alpha authority, change `PLATFORM_ADMIN_EMAIL` and rerun the normal deployment. To
+retry only account activation after fixing Auth0 or SMTP:
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env.production \
+  run --rm api pnpm db:bootstrap
+```
+
+Do not create a second row manually, mark an Auth0 email verified without completing password
+setup, or use an organization-scoped login for the platform dashboard. Platform administration
+uses an unscoped Auth0 session; organization-scoped sessions are only for business-unit workspaces.
+
+Verify the deployment before onboarding data:
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env.production ps
+curl -fsS https://<host>/api/health
+curl -fsS https://<host>/api/auth/config
+```
+
+Both containers must be running, the health response must report a connected database, and the
+auth config must name the intended Auth0 tenant. Then sign in as `PLATFORM_ADMIN_EMAIL` and create
+the first business unit.
+
+### Manual redeployment
+
+Until a reviewed CI/CD pipeline replaces this process:
+
+```bash
+git pull --ff-only
+export ADMIN_DATABASE_URL='postgres://nioadmin:...@.../nio?sslmode=require'
+MIGRATION_DATABASE_URL="$ADMIN_DATABASE_URL" ./deploy/deploy.sh
+curl -fsS https://<host>/api/health
+```
+
+Never run the demo seed in production, commit `.env.production`, or put the administrator database
+URL into a container environment that persists after migration.
+
+### Public HTTPS and restricted administration
+
+The NSG exposes ports 80 and 443 publicly. Port 80 contains only the Let's Encrypt challenge and an
+HTTPS redirect; the SPA, public storefronts, and API are served over 443. Protected API routes
+require Auth0 regardless of network location. Port 22 remains restricted to the administrator's
+CIDR and is never opened for application testers.
 
 ### Running PostgreSQL on the VM instead
 

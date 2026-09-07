@@ -80,7 +80,7 @@ export function FulfillmentBilling() {
       <div className="page-header">
         <div>
           <h1>Billing</h1>
-          <p>Where NIO settles your fulfillment costs, and what is currently outstanding.</p>
+          <p>Where Qinio settles your fulfillment costs, and what is currently outstanding.</p>
         </div>
       </div>
 

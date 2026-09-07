@@ -221,7 +221,7 @@ export class Auth0Provider implements AuthProvider {
 
   /**
    * Organizations reject every login until at least one connection is explicitly enabled for
-   * them. The database connection is shared by NIO's organizations, while membership itself stays
+   * them. The database connection is shared by Qinio's organizations, while membership itself stays
    * application-controlled rather than being granted automatically on login.
    */
   private async enableDatabaseConnection(orgId: string): Promise<void> {
@@ -269,7 +269,7 @@ export class Auth0Provider implements AuthProvider {
 
       /*
        * Verification and activation are independent in Auth0: an operator can verify an address
-       * without the invitee ever choosing a password. For NIO-created accounts, only a password
+       * without the invitee ever choosing a password. For Qinio-created accounts, only a password
        * reset after the invitation timestamp proves the activation ticket was completed.
        */
       if (invitationIsPending(found)) {

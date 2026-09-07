@@ -48,8 +48,8 @@ export const payoutAccountTypeEnum = pgEnum('payout_account_type', ['ach', 'wire
 /* --------------------------------- Platform --------------------------------- */
 
 /**
- * The alpha superuser table. Membership here is a manual database insert by design: it is the
- * root of trust for the whole platform, so nothing in the application can grant it.
+ * The alpha superuser table. The privileged deployment bootstrap owns this root-of-trust row;
+ * no authenticated application route can grant platform administration.
  */
 export const platformAdmins = pgTable(
   'platform_admins',

@@ -73,7 +73,7 @@ export function Layout() {
     <div className="app-shell">
       <header className="topbar">
         <Link to="/portal" className="brand">
-          NIO<span>Tech</span>
+          Qin<span>io</span>
         </Link>
 
         <nav className="topnav">

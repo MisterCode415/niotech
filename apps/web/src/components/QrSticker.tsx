@@ -32,7 +32,7 @@ export function QrSticker({ value, orderNumber, externalOrderId, kitNumber, test
       <div className="kit-name">
         Kit {kitNumber} · {testTypeName}
       </div>
-      <div className="label">NIO {orderNumber}</div>
+      <div className="label">Qinio {orderNumber}</div>
       <div className="label">REF {externalOrderId ?? '—'}</div>
     </div>
   );

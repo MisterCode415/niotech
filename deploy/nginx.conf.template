@@ -41,12 +41,6 @@ server {
     ssl_session_cache   shared:SSL:10m;
     ssl_session_timeout 1d;
 
-    # The private gate for this test deployment. Dev auth mints tokens without a password, so
-    # nothing here may be reachable from the open internet. Basic auth cannot be used instead:
-    # the SPA sends "Authorization: Bearer" on every API call, which replaces the browser's
-    # "Authorization: Basic" header and would make nginx reject every request.
-    include /etc/nginx/allowlist.conf;
-
     add_header Strict-Transport-Security "max-age=31536000" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-Frame-Options "DENY" always;

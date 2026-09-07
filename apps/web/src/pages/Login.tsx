@@ -56,7 +56,7 @@ export function Login() {
     <div className="centered">
       <div className="auth-card">
         <h1>
-          NIO<span style={{ color: 'var(--accent)' }}>Tech</span>
+          Qin<span style={{ color: 'var(--accent)' }}>io</span>
         </h1>
         <p className="muted">Testing and lab workflow platform.</p>
 

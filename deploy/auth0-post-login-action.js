@@ -12,7 +12,7 @@
  * `email` alone would vanish and the failure would look identical to not having deployed at all.
  * The namespace below is matched literally by the API and the two must stay in step.
  *
- * Actions are tenant-wide: this runs for every application in the tenant, not just NIO's.
+ * Actions are tenant-wide: this runs for every application in the tenant, not just Qinio's.
  *
  * Deploy with:
  *   auth0 actions create --name "Add email claim" --trigger post-login \
