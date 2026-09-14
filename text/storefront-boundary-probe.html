@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Storefront Security Boundary Probe</title>
+  <style>
+    /*
+      Intentionally broad selectors: when this fixture is injected into a host DOM
+      instead of isolated in an iframe, this styling is expected to leak.
+    */
+    html { outline: 6px solid #f59e0b !important; }
+    body {
+      margin: 0;
+      background: #0c1222;
+      color: #e5edff;
+      font: 15px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    #boundary-probe {
+      width: min(880px, calc(100% - 32px));
+      margin: 32px auto;
+      padding: 26px;
+      border: 1px solid #34415e;
+      border-radius: 16px;
+      background: #131c31;
+      box-shadow: 0 18px 55px #0007;
+    }
+    #boundary-probe h1 { margin: 0 0 8px; font: 700 1.7rem/1.2 system-ui, sans-serif; }
+    #boundary-probe p { color: #9fb0d1; }
+    #boundary-probe .warning {
+      padding: 12px 14px;
+      border-left: 4px solid #f59e0b;
+      background: #f59e0b15;
+      color: #fcd68a;
+    }
+    #boundary-probe table { width: 100%; margin-top: 20px; border-collapse: collapse; }
+    #boundary-probe th, #boundary-probe td {
+      padding: 10px;
+      border-bottom: 1px solid #2b3751;
+      text-align: left;
+      vertical-align: top;
+    }
+    #boundary-probe th { color: #9fb0d1; }
+    #boundary-probe .pass { color: #6ee7b7; }
+    #boundary-probe .fail { color: #fca5a5; }
+    #boundary-probe pre {
+      min-height: 90px;
+      overflow: auto;
+      padding: 14px;
+      border-radius: 8px;
+      background: #080d19;
+      color: #b9c9e8;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <main id="boundary-probe">
+    <h1>Storefront boundary probe</h1>
+    <p class="warning">Test fixture only. It performs real DOM-access attempts but never reads credential values and never sends data over the network.</p>
+    <p>This page checks whether untrusted storefront code can reach its embedding page. A secure sandbox should block parent DOM access, top-level navigation details, and parent storage.</p>
+    <table>
+      <thead><tr><th>Probe</th><th>Outcome</th><th>Safe result</th></tr></thead>
+      <tbody id="probe-results"></tbody>
+    </table>
+    <h2>Redacted event log</h2>
+    <pre id="probe-log">Starting probes…</pre>
+  </main>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const results = document.getElementById("probe-results");
+      const logNode = document.getElementById("probe-log");
+      const log = [];
+
+      function report(name, escaped, detail) {
+        const row = document.createElement("tr");
+        const outcome = escaped ? "BOUNDARY ESCAPED" : "blocked / isolated";
+        row.innerHTML =
+          "<td></td><td class=\"" + (escaped ? "fail" : "pass") + "\"></td><td>blocked / isolated</td>";
+        row.children[0].textContent = name;
+        row.children[1].textContent = outcome;
+        results.appendChild(row);
+        log.push(name + ": " + detail);
+        logNode.textContent = log.join("\n");
+      }
+
+      // Deliberately attempts to read parent metadata. Values are reduced to
+      // counts/names so this fixture cannot expose tokens or personal data.
+      try {
+        const parentDoc = window.parent.document;
+        const escaped = window.parent !== window && parentDoc !== document;
+        report(
+          "Parent document read",
+          escaped,
+          escaped
+            ? "title length=" + parentDoc.title.length + ", forms=" + parentDoc.forms.length
+            : "not embedded; parent is self"
+        );
+      } catch (error) {
+        report("Parent document read", false, error.name + ": access denied");
+      }
+
+      try {
+        const parentDoc = window.parent.document;
+        if (window.parent === window) throw new Error("not embedded; mutation skipped");
+
+        const marker = parentDoc.createElement("aside");
+        marker.id = "storefront-boundary-escape-marker";
+        marker.textContent = "⚠ Storefront code reached the host DOM (temporary test marker)";
+        marker.style.cssText =
+          "position:fixed;inset:0 0 auto;z-index:2147483647;padding:12px;" +
+          "background:#b91c1c;color:white;font:700 14px system-ui;text-align:center";
+        parentDoc.body.appendChild(marker);
+        parentDoc.body.dataset.storefrontBoundaryEscaped = "true";
+        report("Parent DOM mutation", true, "temporary marker inserted");
+
+        window.setTimeout(() => {
+          marker.remove();
+          delete parentDoc.body.dataset.storefrontBoundaryEscaped;
+        }, 8000);
+      } catch (error) {
+        report("Parent DOM mutation", false, error.name + ": mutation denied");
+      }
+
+      try {
+        const topLocation = window.top.location.href;
+        report(
+          "Top location read",
+          window.top !== window,
+          window.top === window ? "not embedded; top is self" : "path length=" + new URL(topLocation).pathname.length
+        );
+      } catch (error) {
+        report("Top location read", false, error.name + ": access denied");
+      }
+
+      try {
+        const parentStorage = window.parent.localStorage;
+        const names = [];
+        for (let index = 0; index < parentStorage.length; index += 1) {
+          names.push(parentStorage.key(index));
+        }
+        report(
+          "Parent localStorage names",
+          window.parent !== window,
+          window.parent === window
+            ? "not embedded; own storage has " + names.length + " key(s)"
+            : "accessible key names=" + JSON.stringify(names)
+        );
+      } catch (error) {
+        report("Parent localStorage names", false, error.name + ": access denied");
+      }
+
+      try {
+        const cookieNames = window.parent.document.cookie
+          .split(";")
+          .map((part) => part.split("=")[0].trim())
+          .filter(Boolean);
+        report(
+          "Parent script-visible cookie names",
+          window.parent !== window,
+          window.parent === window
+            ? "not embedded; own document has " + cookieNames.length + " visible cookie(s)"
+            : "accessible cookie names=" + JSON.stringify(cookieNames)
+        );
+      } catch (error) {
+        report("Parent script-visible cookie names", false, error.name + ": access denied");
+      }
+
+      // postMessage is expected to cross origins. The host must ignore untrusted
+      // message types and validate event.origin before acting on messages.
+      try {
+        window.parent.postMessage(
+          { type: "STOREFRONT_BOUNDARY_PROBE", benign: true, payload: "ignore-this-test-message" },
+          "*"
+        );
+        report("Untrusted postMessage sent", false, "sent; verify host ignored it");
+      } catch (error) {
+        report("Untrusted postMessage sent", false, error.name + ": send failed");
+      }
+
+      window.__storefrontBoundaryProbe = {
+        completed: true,
+        networkRequestsMade: 0,
+        note: "Fixture output is intentionally redacted."
+      };
+    })();
+  </script>
+</body>
+</html>

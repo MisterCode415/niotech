@@ -68,6 +68,39 @@ the patient, which is the other branch of the flow.
 
 Every email the platform sends is captured in Mailpit rather than delivered.
 
+## Storefront and commerce model
+
+Storefronts are destination-only. Qinio does not publish a tenant directory: customers arrive at a
+known `/:slug` URL from a business unit's own domain, campaign, or external store. Each storefront
+offers standalone patient account creation as well as package-driven registration. With Auth0,
+registration ends on a check-email screen; the activation/sign-in link retains the selected
+package and returns the patient to checkout.
+
+Business-unit admins create packages as drafts, then activate or archive them. Packages can carry
+an internal reference, an external product reference, and an external purchase URL. A package with
+an external URL sends the customer to that store; one without it uses Qinio's mock checkout.
+Descriptive edits are made in place. Changing a sold package's price, test composition, clinician
+requirement, or commerce identifiers creates a successor version and archives the historical
+version.
+
+Every order stores an immutable package snapshot containing its price, clinician requirement, and
+test/kit composition. Fulfillment therefore uses what the patient actually purchased, even after
+the catalog changes.
+
+### External purchase reconciliation
+
+`POST /api/integrations/:slug/purchases` is the temporary provider-neutral server-to-server
+boundary for purchases completed elsewhere. It is disabled unless `INTEGRATION_API_SECRET` is set
+to a generated value of at least 32 characters. Callers send that value in
+`X-Qinio-Integration-Key`; never expose it to storefront JavaScript. The request identifies the
+source, external order/payment IDs, package external reference, patient, and shipping details.
+Replaying the same tenant + source + external order ID returns the original order and never creates
+duplicate kits.
+
+This shared-key adapter is suitable for controlled alpha integrations. A production Stripe,
+Shopify, or custom adapter should verify that provider's signed webhook before translating it into
+this internal contract.
+
 ## Architecture
 
 ```

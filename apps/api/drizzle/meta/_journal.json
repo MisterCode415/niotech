@@ -36,6 +36,13 @@
       "when": 1788711861908,
       "tag": "0004_fulfillment_charge_owner",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1788796800000,
+      "tag": "0005_storefront_commerce",
+      "breakpoints": true
     }
   ]
 }

@@ -47,6 +47,8 @@ const envSchema = z.object({
   SMTP_PASS: z.string().optional(),
 
   PAYMENT_PROVIDER: z.enum(['mock']).default('mock'),
+  /** Shared secret for the temporary provider-neutral server-to-server purchase adapter. */
+  INTEGRATION_API_SECRET: z.string().min(32).optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);

@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pulsewell — Interactive health storefront</title>
+  <style>
+    #pulsewell-demo {
+      --pw-ink: #17204a;
+      --pw-muted: #687198;
+      --pw-violet: #6757e8;
+      --pw-aqua: #56d6cf;
+      --pw-rose: #ff7897;
+      box-sizing: border-box;
+      width: min(1120px, calc(100vw - 48px));
+      max-width: none;
+      margin: 28px 0 64px;
+      overflow: hidden;
+      border: 1px solid rgba(103, 87, 232, .14);
+      border-radius: 30px;
+      color: var(--pw-ink);
+      background:
+        radial-gradient(circle at 0 0, #dedaff 0, transparent 30rem),
+        radial-gradient(circle at 100% 25%, #c8fbf2 0, transparent 27rem),
+        #f7f8ff;
+      box-shadow: 0 26px 70px rgba(31, 39, 89, .16);
+      font: 16px/1.55 Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+    }
+    #pulsewell-demo, #pulsewell-demo * { box-sizing: border-box; }
+    #pulsewell-demo h1, #pulsewell-demo h2, #pulsewell-demo h3,
+    #pulsewell-demo p { font-family: inherit; }
+    #pulsewell-demo .pw-inner { width: min(980px, calc(100% - 64px)); margin: auto; }
+    #pulsewell-demo .pw-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 28px 0;
+    }
+    #pulsewell-demo .pw-logo { font-size: 1.2rem; font-weight: 900; letter-spacing: -.045em; }
+    #pulsewell-demo .pw-logo span { color: var(--pw-violet); }
+    #pulsewell-demo .pw-proof {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--pw-muted);
+      font-size: .78rem;
+      font-weight: 700;
+    }
+    #pulsewell-demo .pw-proof i {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #28b789;
+      box-shadow: 0 0 0 5px rgba(40, 183, 137, .12);
+    }
+    #pulsewell-demo .pw-hero {
+      display: grid;
+      grid-template-columns: 1.08fr .92fr;
+      gap: 54px;
+      align-items: center;
+      min-height: 520px;
+      padding: 48px 0 78px;
+    }
+    #pulsewell-demo .pw-kicker {
+      margin-bottom: 14px;
+      color: var(--pw-violet);
+      font-size: .76rem;
+      font-weight: 850;
+      letter-spacing: .15em;
+      text-transform: uppercase;
+    }
+    #pulsewell-demo .pw-hero h1 {
+      margin: 0 0 22px;
+      max-width: 650px;
+      color: var(--pw-ink);
+      font-size: clamp(3.3rem, 6.3vw, 6rem);
+      font-weight: 850;
+      letter-spacing: -.075em;
+      line-height: .88;
+    }
+    #pulsewell-demo .pw-hero h1 em { color: var(--pw-violet); font-style: normal; }
+    #pulsewell-demo .pw-hero-copy > p {
+      max-width: 540px;
+      margin: 0;
+      color: var(--pw-muted);
+      font-size: 1.08rem;
+    }
+    #pulsewell-demo .pw-badges { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 28px; }
+    #pulsewell-demo .pw-badges span {
+      padding: 8px 12px;
+      border: 1px solid rgba(103, 87, 232, .14);
+      border-radius: 999px;
+      color: var(--pw-muted);
+      background: rgba(255, 255, 255, .62);
+      font-size: .78rem;
+      font-weight: 700;
+      backdrop-filter: blur(8px);
+    }
+    #pulsewell-demo .pw-orbit {
+      position: relative;
+      width: min(400px, 100%);
+      aspect-ratio: 1;
+      margin: auto;
+      border: 1px solid rgba(103, 87, 232, .18);
+      border-radius: 50%;
+      animation: pw-spin 25s linear infinite;
+    }
+    #pulsewell-demo .pw-orbit::before, #pulsewell-demo .pw-orbit::after {
+      content: "";
+      position: absolute;
+      inset: 15%;
+      border: 1px dashed rgba(103, 87, 232, .25);
+      border-radius: inherit;
+    }
+    #pulsewell-demo .pw-orbit::after {
+      inset: 31%;
+      border: 0;
+      background: linear-gradient(135deg, var(--pw-violet), #9a8fff);
+      box-shadow: 0 30px 80px rgba(103, 87, 232, .42);
+    }
+    #pulsewell-demo .pw-dot {
+      position: absolute;
+      width: 54px;
+      height: 54px;
+      border: 9px solid white;
+      border-radius: 50%;
+      background: var(--pw-rose);
+      box-shadow: 0 14px 35px rgba(49, 57, 107, .22);
+    }
+    #pulsewell-demo .pw-dot:nth-child(1) { top: 5%; left: 18%; }
+    #pulsewell-demo .pw-dot:nth-child(2) { right: -1%; top: 42%; background: var(--pw-aqua); }
+    #pulsewell-demo .pw-dot:nth-child(3) { left: 13%; bottom: 3%; width: 43px; height: 43px; background: #ffc65c; }
+    #pulsewell-demo .pw-vial {
+      position: absolute;
+      z-index: 2;
+      width: 88px;
+      height: 205px;
+      left: calc(50% - 44px);
+      top: calc(50% - 102px);
+      border: 9px solid white;
+      border-radius: 20px 20px 44px 44px;
+      background: linear-gradient(to top, var(--pw-rose) 0 43%, #ffc0ce 43% 46%, transparent 46%);
+      box-shadow: 0 22px 42px rgba(45, 35, 97, .34);
+      transform: rotate(11deg);
+      animation: pw-counter-spin 25s linear infinite, pw-float 3.8s ease-in-out infinite;
+    }
+    @keyframes pw-spin { to { transform: rotate(360deg); } }
+    @keyframes pw-counter-spin { to { rotate: -360deg; } }
+    @keyframes pw-float { 50% { translate: 0 -10px; } }
+    #pulsewell-demo .pw-stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      border-top: 1px solid rgba(103, 87, 232, .14);
+      border-bottom: 1px solid rgba(103, 87, 232, .14);
+      background: rgba(255, 255, 255, .44);
+    }
+    #pulsewell-demo .pw-stat { padding: 28px 34px; border-right: 1px solid rgba(103, 87, 232, .14); }
+    #pulsewell-demo .pw-stat:last-child { border-right: 0; }
+    #pulsewell-demo .pw-stat strong { display: block; margin-bottom: 4px; color: var(--pw-ink); font-size: 1.08rem; }
+    #pulsewell-demo .pw-stat span { color: var(--pw-muted); font-size: .82rem; }
+    #pulsewell-demo .pw-section { padding: 84px 0; }
+    #pulsewell-demo .pw-section-head { max-width: 630px; margin-bottom: 34px; }
+    #pulsewell-demo .pw-section h2 {
+      margin: 0 0 12px;
+      color: var(--pw-ink);
+      font-size: clamp(2.2rem, 4vw, 3.8rem);
+      letter-spacing: -.06em;
+      line-height: .98;
+    }
+    #pulsewell-demo .pw-section-head p { margin: 0; color: var(--pw-muted); }
+    #pulsewell-demo .pw-steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    #pulsewell-demo .pw-step {
+      min-height: 210px;
+      padding: 24px;
+      border: 1px solid rgba(103, 87, 232, .12);
+      border-radius: 21px;
+      background: rgba(255, 255, 255, .72);
+      box-shadow: 0 12px 35px rgba(54, 62, 120, .08);
+    }
+    #pulsewell-demo .pw-step b {
+      display: grid;
+      width: 35px;
+      height: 35px;
+      margin-bottom: 42px;
+      place-items: center;
+      border-radius: 50%;
+      color: white;
+      background: var(--pw-violet);
+      font-size: .8rem;
+    }
+    #pulsewell-demo .pw-step h3 { margin: 0 0 7px; color: var(--pw-ink); font-size: 1.08rem; }
+    #pulsewell-demo .pw-step p { margin: 0; color: var(--pw-muted); font-size: .88rem; }
+    #pulsewell-demo .pw-explorer {
+      padding: 42px;
+      border-radius: 26px;
+      color: white;
+      background: var(--pw-ink);
+    }
+    #pulsewell-demo .pw-explorer h2 { color: white; }
+    #pulsewell-demo .pw-explorer .pw-section-head p { color: #abb3d3; }
+    #pulsewell-demo .pw-explorer input { position: absolute; opacity: 0; pointer-events: none; }
+    #pulsewell-demo .pw-goals { display: flex; gap: 9px; flex-wrap: wrap; }
+    #pulsewell-demo .pw-goals label {
+      display: inline-block;
+      margin: 0;
+      padding: 10px 15px;
+      border: 1px solid rgba(255, 255, 255, .2);
+      border-radius: 999px;
+      color: #c5cbe2;
+      cursor: pointer;
+      font: 750 .86rem/1.2 Inter, ui-sans-serif, system-ui, sans-serif;
+      transition: .2s ease;
+    }
+    #pulsewell-demo .pw-goals label:hover { color: white; border-color: rgba(255, 255, 255, .48); }
+    #pw-energy:checked ~ .pw-goals label[for="pw-energy"],
+    #pw-balance:checked ~ .pw-goals label[for="pw-balance"],
+    #pw-baseline:checked ~ .pw-goals label[for="pw-baseline"] { color: var(--pw-ink); border-color: white; background: white; }
+    #pulsewell-demo .pw-answer {
+      display: none;
+      margin-top: 24px;
+      padding: 18px 20px;
+      border-left: 3px solid var(--pw-aqua);
+      border-radius: 0 12px 12px 0;
+      color: #dce1f4;
+      background: rgba(255, 255, 255, .07);
+    }
+    #pulsewell-demo .pw-answer strong { color: white; }
+    #pw-energy:checked ~ .pw-answers .pw-energy,
+    #pw-balance:checked ~ .pw-answers .pw-balance,
+    #pw-baseline:checked ~ .pw-answers .pw-baseline { display: block; animation: pw-in .25s ease both; }
+    @keyframes pw-in { from { opacity: 0; transform: translateY(6px); } }
+    #pulsewell-demo .pw-note { margin: 20px 0 0; color: #8f99bd; font-size: .75rem; }
+    #pulsewell-demo .pw-closing {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 30px;
+      padding: 42px 0 52px;
+    }
+    #pulsewell-demo .pw-closing strong { display: block; color: var(--pw-ink); font-size: 1.3rem; letter-spacing: -.025em; }
+    #pulsewell-demo .pw-closing span { color: var(--pw-muted); font-size: .9rem; }
+    #pulsewell-demo .pw-arrow { color: var(--pw-violet); font-size: 2rem; animation: pw-nudge 1.8s ease-in-out infinite; }
+    @keyframes pw-nudge { 50% { transform: translateY(7px); } }
+    @media (max-width: 820px) {
+      #pulsewell-demo { width: calc(100vw - 32px); }
+      #pulsewell-demo .pw-hero { grid-template-columns: 1fr; padding-top: 28px; }
+      #pulsewell-demo .pw-orbit { width: 320px; }
+      #pulsewell-demo .pw-steps { grid-template-columns: 1fr; }
+      #pulsewell-demo .pw-step { min-height: 0; }
+      #pulsewell-demo .pw-step b { margin-bottom: 24px; }
+    }
+    @media (max-width: 560px) {
+      #pulsewell-demo .pw-inner { width: calc(100% - 36px); }
+      #pulsewell-demo .pw-hero h1 { font-size: 3.3rem; }
+      #pulsewell-demo .pw-orbit { width: 255px; }
+      #pulsewell-demo .pw-stats { grid-template-columns: 1fr; }
+      #pulsewell-demo .pw-stat { border-right: 0; border-bottom: 1px solid rgba(103, 87, 232, .14); }
+      #pulsewell-demo .pw-explorer { padding: 27px 22px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #pulsewell-demo *, #pulsewell-demo *::before, #pulsewell-demo *::after { animation: none !important; }
+    }
+  </style>
+</head>
+<body style="margin:0">
+  <main id="pulsewell-demo">
+    <div class="pw-inner">
+      <div class="pw-top">
+        <div class="pw-logo">pulse<span>well</span></div>
+        <div class="pw-proof"><i></i> Clinician reviewed</div>
+      </div>
+
+      <section class="pw-hero">
+        <div class="pw-hero-copy">
+          <div class="pw-kicker">Small sample · Big picture</div>
+          <h1>The numbers behind how you <em>feel.</em></h1>
+          <p>At-home blood testing turns everyday questions about energy, recovery, and long-term health into signals you can actually understand.</p>
+          <div class="pw-badges">
+            <span>CLIA-certified labs</span>
+            <span>Secure results</span>
+            <span>No waiting room</span>
+          </div>
+        </div>
+        <div class="pw-orbit" aria-label="Animated illustration of a blood sample vial">
+          <span class="pw-dot"></span><span class="pw-dot"></span><span class="pw-dot"></span>
+          <div class="pw-vial"></div>
+        </div>
+      </section>
+    </div>
+
+    <div class="pw-stats">
+      <div class="pw-stat"><strong>One simple visit</strong><span>Use a nearby collection partner</span></div>
+      <div class="pw-stat"><strong>Clear context</strong><span>Understand every reported marker</span></div>
+      <div class="pw-stat"><strong>Private by design</strong><span>Your health data stays yours</span></div>
+    </div>
+
+    <div class="pw-inner">
+      <section class="pw-section">
+        <div class="pw-section-head">
+          <div class="pw-kicker">How it works</div>
+          <h2>From curiosity to clarity.</h2>
+          <p>We handle the clinical complexity and give you a straightforward path from collection to results.</p>
+        </div>
+        <div class="pw-steps">
+          <article class="pw-step"><b>01</b><h3>Choose your focus</h3><p>Select one of the available testing packages below based on what you want to understand.</p></article>
+          <article class="pw-step"><b>02</b><h3>Give a small sample</h3><p>Follow the collection instructions and visit your selected laboratory partner.</p></article>
+          <article class="pw-step"><b>03</b><h3>See the full picture</h3><p>Review clear results and useful context in your secure health dashboard.</p></article>
+        </div>
+      </section>
+
+      <section class="pw-section pw-explorer">
+        <div class="pw-section-head">
+          <div class="pw-kicker">Try it</div>
+          <h2>What are you curious about?</h2>
+          <p>Choose a goal to see the kinds of health signals that may help build a clearer picture.</p>
+        </div>
+        <input type="radio" name="pw-goal" id="pw-energy" checked>
+        <input type="radio" name="pw-goal" id="pw-balance">
+        <input type="radio" name="pw-goal" id="pw-baseline">
+        <div class="pw-goals">
+          <label for="pw-energy">Energy &amp; recovery</label>
+          <label for="pw-balance">Hormonal balance</label>
+          <label for="pw-baseline">Overall baseline</label>
+        </div>
+        <div class="pw-answers">
+          <div class="pw-answer pw-energy"><strong>Look beyond “just tired.”</strong> Nutrient status, thyroid function, inflammation, and blood health can all add useful context.</div>
+          <div class="pw-answer pw-balance"><strong>See connected signals together.</strong> A focused panel can add context around mood, sleep, metabolism, and vitality.</div>
+          <div class="pw-answer pw-baseline"><strong>Start with the fundamentals.</strong> Cardiovascular, metabolic, liver, kidney, and blood markers create a practical reference point.</div>
+        </div>
+        <p class="pw-note">Educational information only. Testing does not replace personalized medical advice or emergency care.</p>
+      </section>
+
+      <div class="pw-closing">
+        <div><strong>Ready to know more?</strong><span>Explore the testing packages available below.</span></div>
+        <div class="pw-arrow" aria-hidden="true">↓</div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    // Progressive enhancement when opened as a standalone document. The goal
+    // selector above remains interactive without JavaScript when embedded.
+    document.querySelectorAll('#pulsewell-demo input[name="pw-goal"]').forEach((input) => {
+      input.addEventListener("change", () => {
+        document.getElementById("pulsewell-demo").dataset.selectedGoal = input.id;
+      });
+    });
+  </script>
+</body>
+</html>

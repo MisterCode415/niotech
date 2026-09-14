@@ -177,6 +177,12 @@ PLATFORM_ADMIN_EMAIL=papaviking@gmail.com
 ```
 
 All five Auth0 values, the restricted database URL, and SMTP credentials must also be populated.
+Generate the alpha server-to-server commerce key directly on the VM:
+
+```bash
+printf 'INTEGRATION_API_SECRET=%s\n' "$(openssl rand -hex 32)" >> .env.production
+```
+
 Inspect whether keys exist without printing their values:
 
 ```bash
@@ -184,11 +190,35 @@ for key in \
   SERVER_NAME WEB_ORIGIN API_PUBLIC_URL DATABASE_URL \
   AUTH_PROVIDER AUTH0_DOMAIN AUTH0_AUDIENCE AUTH0_SPA_CLIENT_ID \
   AUTH0_M2M_CLIENT_ID AUTH0_M2M_CLIENT_SECRET \
-  PLATFORM_ADMIN_EMAIL SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASS SMTP_FROM
+  PLATFORM_ADMIN_EMAIL SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASS SMTP_FROM \
+  INTEGRATION_API_SECRET
 do
   grep -Eq "^${key}=.+" .env.production && echo "$key=set" || echo "$key=missing"
 done
 ```
+
+After deployment, reconcile a mock external purchase from a trusted server (not browser code):
+
+```bash
+export QINIO_INTEGRATION_KEY='value-from-the-VM-environment'
+curl -fsS -X POST "https://${APP_HOST}/api/integrations/vitality/purchases" \
+  -H 'Content-Type: application/json' \
+  -H "X-Qinio-Integration-Key: ${QINIO_INTEGRATION_KEY}" \
+  --data '{
+    "source":"custom_store",
+    "externalOrderId":"store-order-1001",
+    "externalPaymentId":"store-payment-1001",
+    "packageReference":"external-product-id-from-package-admin",
+    "patient":{"email":"patient@example.com","name":"Example Patient"},
+    "shippingAddress":{
+      "line1":"44 Cedar Street","city":"Portland","region":"OR",
+      "postalCode":"97205","country":"US"
+    },
+    "shippingMethod":"ground"
+  }'
+```
+
+Sending the same `source` and `externalOrderId` again is an idempotent replay.
 
 ## Restricted PostgreSQL runtime role
 

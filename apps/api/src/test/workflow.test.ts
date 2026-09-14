@@ -37,6 +37,7 @@ beforeAll(async () => {
     doctor: 'doctor@vitality.test',
     admin: 'admin@vitality.test',
     otherPatient: 'patient@metabolic.test',
+    metabolicAdmin: 'admin@metabolic.test',
     platform: 'admin@niotech.test',
   })) {
     tokens[key] = await login(app, email);
@@ -433,6 +434,219 @@ describe('identity and database authorization boundaries', () => {
     expect(await countVisibleOrders(identity.ownerId, 'patient')).toBeGreaterThan(0);
     expect(await countVisibleOrders(identity.foreignPatientId, 'patient')).toBe(0);
     expect(await countVisibleOrders(identity.foreignPatientId, 'doctor')).toBeGreaterThan(0);
+  });
+});
+
+describe('storefront commerce readiness', () => {
+  it('does not enumerate tenants and returns an account-neutral registration response', async () => {
+    const directory = await app.inject({ method: 'GET', url: '/api/public/business-units' });
+    expect(directory.statusCode).toBe(404);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/public/vitality/register',
+      payload: {
+        email: `new-patient-${Date.now()}@example.test`,
+        name: 'New Patient',
+      },
+    });
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toEqual({ accepted: true });
+
+    const existing = await app.inject({
+      method: 'POST',
+      url: '/api/public/vitality/register',
+      payload: { email: 'patient@vitality.test', name: 'Existing Patient' },
+    });
+    expect(existing.statusCode).toBe(202);
+    expect(existing.json()).toEqual({ accepted: true });
+  });
+
+  it('versions a sold package and keeps the order composition snapshot immutable', async () => {
+    const testCatalog = await call<{
+      testTypes: Array<{ id: string; name: string }>;
+    }>(app, {
+      method: 'GET',
+      url: '/api/bu/vitality/test-types',
+      token: tokens.admin!,
+    });
+    const testType = testCatalog.testTypes[0]!;
+    const suffix = Date.now().toString();
+    const original = {
+      name: `Versioned package ${suffix}`,
+      description: 'Original',
+      focusArea: 'regression',
+      internalReference: `VERSION-${suffix}`,
+      externalProductId: `external-v1-${suffix}`,
+      externalPurchaseUrl: 'https://store.example.test/original',
+      priceCents: 12500,
+      requiresClinician: false,
+      status: 'active',
+      tests: [{ testTypeId: testType.id, quantity: 2 }],
+    };
+    const created = await call<{ package: { id: string } }>(app, {
+      method: 'POST',
+      url: '/api/bu/vitality/packages',
+      token: tokens.admin!,
+      payload: original,
+      expect: 201,
+    });
+    const placed = await call<{ order: { id: string } }>(app, {
+      method: 'POST',
+      url: '/api/bu/vitality/patient/orders',
+      token: tokens.patient!,
+      payload: {
+        packageId: created.package.id,
+        shippingAddress: TEST_ADDRESS,
+        shippingMethod: 'ground',
+      },
+      expect: 201,
+    });
+
+    const updated = await call<{
+      package: { id: string; version: number };
+      versioned: boolean;
+    }>(app, {
+      method: 'PUT',
+      url: `/api/bu/vitality/packages/${created.package.id}`,
+      token: tokens.admin!,
+      payload: {
+        ...original,
+        priceCents: 15000,
+        externalProductId: `external-v2-${suffix}`,
+        externalPurchaseUrl: 'https://store.example.test/current',
+        tests: [{ testTypeId: testType.id, quantity: 3 }],
+      },
+    });
+    expect(updated.versioned).toBe(true);
+    expect(updated.package.version).toBe(2);
+    expect(updated.package.id).not.toBe(created.package.id);
+
+    const snapshot = await withPlatformScope(async (tx) => {
+      const [row] = await tx
+        .select({
+          priceCents: orders.priceCents,
+          packageSnapshot: orders.packageSnapshot,
+        })
+        .from(orders)
+        .where(eq(orders.id, placed.order.id))
+        .limit(1);
+      return row!;
+    });
+    expect(snapshot.priceCents).toBe(12500);
+    expect(snapshot.packageSnapshot.priceCents).toBe(12500);
+    expect(snapshot.packageSnapshot.tests[0]?.quantity).toBe(2);
+
+    await call(app, {
+      method: 'POST',
+      url: `/api/bu/vitality/patient/orders/${placed.order.id}/pay`,
+      token: tokens.patient!,
+      payload: { paymentToken: 'snapshot_test' },
+    });
+    const detail = await call<OrderDetail>(app, {
+      method: 'GET',
+      url: `/api/bu/vitality/patient/orders/${placed.order.id}`,
+      token: tokens.patient!,
+    });
+    expect(detail.kits).toHaveLength(2);
+  });
+
+  it('reconciles an external purchase exactly once', async () => {
+    const testCatalog = await call<{ testTypes: Array<{ id: string }> }>(app, {
+      method: 'GET',
+      url: '/api/bu/vitality/test-types',
+      token: tokens.admin!,
+    });
+    const suffix = Date.now().toString();
+    const packageReference = `partner-product-${suffix}`;
+    await call(app, {
+      method: 'POST',
+      url: '/api/bu/vitality/packages',
+      token: tokens.admin!,
+      payload: {
+        name: `External package ${suffix}`,
+        priceCents: 9900,
+        requiresClinician: false,
+        status: 'active',
+        externalProductId: packageReference,
+        tests: [{ testTypeId: testCatalog.testTypes[0]!.id, quantity: 1 }],
+      },
+      expect: 201,
+    });
+    const payload = {
+      source: 'mock_partner',
+      externalOrderId: `partner-order-${suffix}`,
+      externalPaymentId: `partner-payment-${suffix}`,
+      packageReference,
+      patient: {
+        email: `external-patient-${suffix}@example.test`,
+        name: 'External Patient',
+      },
+      shippingAddress: TEST_ADDRESS,
+      shippingMethod: 'two_day',
+    };
+    const first = await app.inject({
+      method: 'POST',
+      url: '/api/integrations/vitality/purchases',
+      headers: {
+        'x-qinio-integration-key': 'test-integration-secret-at-least-32-characters',
+      },
+      payload,
+    });
+    expect(first.statusCode).toBe(201);
+    expect(first.json().replayed).toBe(false);
+
+    const replay = await app.inject({
+      method: 'POST',
+      url: '/api/integrations/vitality/purchases',
+      headers: {
+        'x-qinio-integration-key': 'test-integration-secret-at-least-32-characters',
+      },
+      payload,
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json()).toMatchObject({
+      replayed: true,
+      order: { id: first.json().order.id },
+    });
+
+    const otherCatalog = await call<{ testTypes: Array<{ id: string }> }>(app, {
+      method: 'GET',
+      url: '/api/bu/metabolic/test-types',
+      token: tokens.metabolicAdmin!,
+    });
+    const sameReferenceOtherTenant = await app.inject({
+      method: 'POST',
+      url: '/api/bu/metabolic/packages',
+      headers: auth(tokens.metabolicAdmin!),
+      payload: {
+        name: `Other tenant package ${suffix}`,
+        priceCents: 8800,
+        requiresClinician: false,
+        status: 'active',
+        externalProductId: packageReference,
+        tests: [{ testTypeId: otherCatalog.testTypes[0]!.id, quantity: 1 }],
+      },
+    });
+    expect(sameReferenceOtherTenant.statusCode).toBe(201);
+  });
+
+  it('rate-limits repeated public registration attempts', async () => {
+    const statuses: number[] = [];
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/public/metabolic/register',
+        remoteAddress: '198.51.100.44',
+        payload: {
+          email: `registration-limit-${attempt}-${Date.now()}@example.test`,
+          name: 'Rate Limit Test',
+        },
+      });
+      statuses.push(response.statusCode);
+    }
+    expect(statuses.slice(0, 5)).toEqual([202, 202, 202, 202, 202]);
+    expect(statuses[5]).toBe(429);
   });
 });
 

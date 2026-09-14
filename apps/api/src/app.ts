@@ -17,6 +17,7 @@ import { doctorRoutes } from './routes/doctor.js';
 import { scanRoutes } from './routes/scan.js';
 import { notificationRoutes } from './routes/notifications.js';
 import { publicRoutes } from './routes/public.js';
+import { integrationRoutes } from './routes/integrations.js';
 
 export async function buildApp() {
   const app = Fastify({
@@ -80,6 +81,7 @@ export async function buildApp() {
   await app.register(healthRoutes);
   await app.register(authRoutes);
   await app.register(publicRoutes);
+  await app.register(integrationRoutes);
   await app.register(platformRoutes);
   await app.register(businessUnitRoutes);
   await app.register(patientRoutes);

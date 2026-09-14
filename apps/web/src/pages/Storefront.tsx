@@ -12,6 +12,7 @@ interface PackageRow {
   focusArea: string | null;
   priceCents: number;
   requiresClinician: boolean;
+  externalPurchaseUrl: string | null;
   kitCount: number;
   tests: Array<{ name: string; description: string | null; quantity: number; turnaroundDays: number }>;
 }
@@ -48,10 +49,7 @@ export function Storefront() {
   return (
     <div className="page">
       <div className="hero">
-        <div className="spread" style={{ marginBottom: 18 }}>
-          <Link to="/" className="small muted">
-            ← All storefronts
-          </Link>
+        <div className="spread" style={{ marginBottom: 18, justifyContent: 'flex-end' }}>
           {me ? (
             <Link to="/portal" className="btn small">
               My portal
@@ -72,6 +70,13 @@ export function Storefront() {
           />
         ) : (
           <p className="muted">This business unit has not published a page yet.</p>
+        )}
+        {!isPatientHere && (
+          <p style={{ marginTop: 20 }}>
+            <Link to={`/${slug}/register`} className="btn">
+              Create patient account
+            </Link>
+          </p>
         )}
       </div>
 
@@ -107,7 +112,16 @@ export function Storefront() {
 
               <div className="spread">
                 <div className="price">{money(pkg.priceCents)}</div>
-                {isPatientHere ? (
+                {pkg.externalPurchaseUrl ? (
+                  <a
+                    className="btn primary"
+                    href={pkg.externalPurchaseUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Purchase
+                  </a>
+                ) : isPatientHere ? (
                   <Link className="btn primary" to={`/${slug}/checkout/${pkg.id}`}>
                     Order kit
                   </Link>

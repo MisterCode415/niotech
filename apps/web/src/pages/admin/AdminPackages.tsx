@@ -18,9 +18,13 @@ interface PackageRow {
   name: string;
   description: string | null;
   focusArea: string | null;
+  internalReference: string | null;
+  externalProductId: string | null;
+  externalPurchaseUrl: string | null;
   priceCents: number;
   requiresClinician: boolean;
   status: string;
+  version: number;
   tests: Array<{ testTypeId: string; quantity: number; name: string }>;
 }
 
@@ -42,10 +46,15 @@ export function AdminPackages() {
     name: '',
     description: '',
     focusArea: '',
+    internalReference: '',
+    externalProductId: '',
+    externalPurchaseUrl: '',
     price: '',
     requiresClinician: false,
+    status: 'draft',
   });
   const [selected, setSelected] = useState<Record<string, number>>({});
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   const testTypes = useQuery({
     queryKey: ['admin', slug, 'test-types'],
@@ -80,25 +89,46 @@ export function AdminPackages() {
     onError: fail,
   });
 
-  const createPackage = useMutation({
+  const savePackage = useMutation({
     mutationFn: () =>
-      api(`/api/bu/${slug}/packages`, {
-        method: 'POST',
+      api<{ versioned?: boolean }>(`/api/bu/${slug}/packages${editingId ? `/${editingId}` : ''}`, {
+        method: editingId ? 'PUT' : 'POST',
         body: {
           name: pkgForm.name,
           description: pkgForm.description || undefined,
           focusArea: pkgForm.focusArea || undefined,
+          internalReference: pkgForm.internalReference || undefined,
+          externalProductId: pkgForm.externalProductId || undefined,
+          externalPurchaseUrl: pkgForm.externalPurchaseUrl || undefined,
           priceCents: Math.round(Number(pkgForm.price) * 100),
           requiresClinician: pkgForm.requiresClinician,
+          status: pkgForm.status,
           tests: Object.entries(selected)
             .filter(([, quantity]) => quantity > 0)
             .map(([testTypeId, quantity]) => ({ testTypeId, quantity })),
         },
       }),
-    onSuccess: () => {
-      done('Package created.');
-      setPkgForm({ name: '', description: '', focusArea: '', price: '', requiresClinician: false });
+    onSuccess: (result: { versioned?: boolean }) => {
+      done(
+        editingId
+          ? result.versioned
+            ? 'A new package version was created; the sold version was archived.'
+            : 'Package updated.'
+          : 'Package created as a draft.',
+      );
+      setPkgForm({
+        name: '',
+        description: '',
+        focusArea: '',
+        internalReference: '',
+        externalProductId: '',
+        externalPurchaseUrl: '',
+        price: '',
+        requiresClinician: false,
+        status: 'draft',
+      });
       setSelected({});
+      setEditingId(null);
     },
     onError: fail,
   });
@@ -113,6 +143,23 @@ export function AdminPackages() {
   if (testTypes.isLoading || packages.isLoading) return <Loading what="catalog" />;
 
   const kitTotal = Object.values(selected).reduce((sum, q) => sum + q, 0);
+
+  function editPackage(pkg: PackageRow) {
+    setEditingId(pkg.id);
+    setPkgForm({
+      name: pkg.name,
+      description: pkg.description ?? '',
+      focusArea: pkg.focusArea ?? '',
+      internalReference: pkg.internalReference ?? '',
+      externalProductId: pkg.externalProductId ?? '',
+      externalPurchaseUrl: pkg.externalPurchaseUrl ?? '',
+      price: (pkg.priceCents / 100).toFixed(2),
+      requiresClinician: pkg.requiresClinician,
+      status: pkg.status === 'archived' ? 'draft' : pkg.status,
+    });
+    setSelected(Object.fromEntries(pkg.tests.map((test) => [test.testTypeId, test.quantity])));
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
 
   return (
     <>
@@ -188,7 +235,7 @@ export function AdminPackages() {
         </div>
 
         <div className="card">
-          <div className="card-title">Create a package</div>
+          <div className="card-title">{editingId ? 'Edit package' : 'Create a package'}</div>
           <Field label="Package name">
             <input
               value={pkgForm.name}
@@ -199,6 +246,29 @@ export function AdminPackages() {
             <textarea
               value={pkgForm.description}
               onChange={(e) => setPkgForm({ ...pkgForm, description: e.target.value })}
+            />
+          </Field>
+          <div className="field-row">
+            <Field label="Internal SKU / reference">
+              <input
+                value={pkgForm.internalReference}
+                onChange={(e) => setPkgForm({ ...pkgForm, internalReference: e.target.value })}
+                placeholder="METABOLIC-01"
+              />
+            </Field>
+            <Field label="External product reference" hint="Stripe, Shopify, or partner product ID.">
+              <input
+                value={pkgForm.externalProductId}
+                onChange={(e) => setPkgForm({ ...pkgForm, externalProductId: e.target.value })}
+              />
+            </Field>
+          </div>
+          <Field label="External purchase URL" hint="Leave empty to use Qinio checkout.">
+            <input
+              type="url"
+              value={pkgForm.externalPurchaseUrl}
+              onChange={(e) => setPkgForm({ ...pkgForm, externalPurchaseUrl: e.target.value })}
+              placeholder="https://store.example.com/products/..."
             />
           </Field>
           <div className="field-row">
@@ -252,13 +322,34 @@ export function AdminPackages() {
             A doctor or clinic interprets these results
           </label>
 
+          <Field label="Lifecycle">
+            <select
+              value={pkgForm.status}
+              onChange={(e) => setPkgForm({ ...pkgForm, status: e.target.value })}
+            >
+              <option value="draft">Draft</option>
+              <option value="active">Active</option>
+            </select>
+          </Field>
+
           <button
             className="primary"
-            onClick={() => createPackage.mutate()}
-            disabled={!pkgForm.name || !pkgForm.price || kitTotal === 0 || createPackage.isPending}
+            onClick={() => savePackage.mutate()}
+            disabled={!pkgForm.name || !pkgForm.price || kitTotal === 0 || savePackage.isPending}
           >
-            Create package
+            {editingId ? 'Save package' : 'Create draft'}
           </button>
+          {editingId && (
+            <button
+              style={{ marginLeft: 8 }}
+              onClick={() => {
+                setEditingId(null);
+                setSelected({});
+              }}
+            >
+              Cancel
+            </button>
+          )}
         </div>
       </div>
 
@@ -275,6 +366,7 @@ export function AdminPackages() {
                 <th>Price</th>
                 <th>Clinician</th>
                 <th>Status</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -282,7 +374,10 @@ export function AdminPackages() {
                 <tr key={pkg.id}>
                   <td>
                     {pkg.name}
-                    <div className="small muted">{pkg.focusArea ?? '—'}</div>
+                    <div className="small muted">
+                      {pkg.focusArea ?? '—'} · v{pkg.version}
+                    </div>
+                    <div className="small mono">{pkg.internalReference ?? 'No internal reference'}</div>
                   </td>
                   <td className="small">
                     {pkg.tests.map((test) => (
@@ -310,6 +405,22 @@ export function AdminPackages() {
                       <option value="active">Active</option>
                       <option value="archived">Archived</option>
                     </select>
+                  </td>
+                  <td>
+                    <button className="small" onClick={() => editPackage(pkg)}>
+                      Edit
+                    </button>
+                    {pkg.externalPurchaseUrl && (
+                      <a
+                        className="btn small"
+                        href={pkg.externalPurchaseUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ marginLeft: 6 }}
+                      >
+                        Store
+                      </a>
+                    )}
                   </td>
                 </tr>
               ))}

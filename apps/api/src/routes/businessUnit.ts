@@ -6,6 +6,7 @@ import {
   createPackageSchema,
   createTestTypeSchema,
   ROLE_LABELS,
+  updatePackageSchema,
   upsertMarketingPageSchema,
 } from '@nio/shared';
 import { requireMembership } from '../auth/context.js';
@@ -184,7 +185,10 @@ export async function businessUnitRoutes(app: FastifyInstance) {
           focusArea: input.focusArea,
           priceCents: input.priceCents,
           requiresClinician: input.requiresClinician,
-          status: 'active',
+          internalReference: input.internalReference,
+          externalProductId: input.externalProductId,
+          externalPurchaseUrl: input.externalPurchaseUrl,
+          status: input.status,
         })
         .returning();
 
@@ -200,6 +204,111 @@ export async function businessUnitRoutes(app: FastifyInstance) {
     });
 
     return reply.status(201).send({ package: created });
+  });
+
+  app.put('/api/bu/:slug/packages/:packageId', async (request) => {
+    const { slug, packageId } = z
+      .object({ slug: z.string(), packageId: z.uuid() })
+      .parse(request.params);
+    const ctx = requireMembership(request, slug, ['bu_admin']);
+    const input = updatePackageSchema.parse(request.body);
+
+    return withTenant(ctx, async (tx) => {
+      const [current] = await tx
+        .select()
+        .from(packages)
+        .where(eq(packages.id, packageId))
+        .limit(1);
+      if (!current) throw notFound('Package not found');
+
+      const owned = await tx.select({ id: testTypes.id }).from(testTypes);
+      const ownedIds = new Set(owned.map((test) => test.id));
+      for (const test of input.tests) {
+        if (!ownedIds.has(test.testTypeId)) {
+          throw badRequest(`Unknown test type ${test.testTypeId}`);
+        }
+      }
+
+      const currentTests = await tx
+        .select({
+          testTypeId: packageTestTypes.testTypeId,
+          quantity: packageTestTypes.quantity,
+        })
+        .from(packageTestTypes)
+        .where(eq(packageTestTypes.packageId, current.id));
+      const testSignature = (tests: Array<{ testTypeId: string; quantity: number }>) =>
+        tests
+          .map((test) => `${test.testTypeId}:${test.quantity}`)
+          .sort()
+          .join('|');
+
+      const materialChange =
+        current.priceCents !== input.priceCents ||
+        current.requiresClinician !== input.requiresClinician ||
+        current.internalReference !== (input.internalReference ?? null) ||
+        current.externalProductId !== (input.externalProductId ?? null) ||
+        testSignature(currentTests) !== testSignature(input.tests);
+      const orderCounts = await tx
+        .select({ count: sql<number>`count(*)::int` })
+        .from(orders)
+        .where(eq(orders.packageId, current.id));
+      const orderCount = orderCounts[0]?.count ?? 0;
+
+      const values = {
+        name: input.name,
+        description: input.description,
+        focusArea: input.focusArea,
+        internalReference: input.internalReference,
+        externalProductId: input.externalProductId,
+        externalPurchaseUrl: input.externalPurchaseUrl,
+        priceCents: input.priceCents,
+        requiresClinician: input.requiresClinician,
+        status: input.status,
+        updatedAt: new Date(),
+      };
+
+      if ((orderCount ?? 0) > 0 && materialChange) {
+        const [successor] = await tx
+          .insert(packages)
+          .values({
+            ...values,
+            businessUnitId: ctx.businessUnitId,
+            version: current.version + 1,
+            supersedesPackageId: current.id,
+          })
+          .returning();
+        await tx.insert(packageTestTypes).values(
+          input.tests.map((test) => ({
+            packageId: successor!.id,
+            testTypeId: test.testTypeId,
+            quantity: test.quantity,
+          })),
+        );
+        await tx
+          .update(packages)
+          .set({ status: 'archived', updatedAt: new Date() })
+          .where(eq(packages.id, current.id));
+        return { package: successor!, versioned: true };
+      }
+
+      const [updated] = await tx
+        .update(packages)
+        .set(values)
+        .where(eq(packages.id, current.id))
+        .returning();
+
+      if (materialChange) {
+        await tx.delete(packageTestTypes).where(eq(packageTestTypes.packageId, current.id));
+        await tx.insert(packageTestTypes).values(
+          input.tests.map((test) => ({
+            packageId: current.id,
+            testTypeId: test.testTypeId,
+            quantity: test.quantity,
+          })),
+        );
+      }
+      return { package: updated!, versioned: false };
+    });
   });
 
   app.patch('/api/bu/:slug/packages/:packageId/status', async (request) => {

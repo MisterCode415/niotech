@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VitaTrace Labs — At-home health insights</title>
+  <style>
+    :root {
+      --ink: #17211f;
+      --muted: #60706b;
+      --cream: #f7f3e9;
+      --paper: #fffdf8;
+      --mint: #dff4ea;
+      --green: #176b52;
+      --coral: #ef7b63;
+      --line: #dce4df;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--cream);
+      font: 16px/1.55 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    a { color: inherit; }
+    .shell { width: min(1120px, calc(100% - 40px)); margin: auto; }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 24px 0;
+    }
+    .brand { font-weight: 850; letter-spacing: -.04em; font-size: 1.25rem; }
+    .brand i { color: var(--coral); font-style: normal; }
+    nav { display: flex; gap: 24px; color: var(--muted); font-size: .92rem; }
+    nav a { text-decoration: none; }
+    .hero {
+      display: grid;
+      grid-template-columns: 1.12fr .88fr;
+      gap: 60px;
+      align-items: center;
+      padding: 72px 0 88px;
+    }
+    .eyebrow {
+      color: var(--green);
+      font-size: .78rem;
+      font-weight: 800;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 12px 0 22px;
+      max-width: 720px;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(3.2rem, 7vw, 6.4rem);
+      font-weight: 500;
+      letter-spacing: -.065em;
+      line-height: .92;
+    }
+    .lead { max-width: 590px; color: var(--muted); font-size: 1.12rem; }
+    .actions { display: flex; gap: 12px; margin-top: 32px; flex-wrap: wrap; }
+    .button {
+      display: inline-block;
+      padding: 13px 20px;
+      border: 1px solid var(--ink);
+      border-radius: 999px;
+      text-decoration: none;
+      font-weight: 750;
+    }
+    .button.primary { color: white; background: var(--ink); }
+    .sample {
+      position: relative;
+      min-height: 450px;
+      border: 1px solid var(--line);
+      border-radius: 48% 48% 32px 32px;
+      background: var(--mint);
+      overflow: hidden;
+    }
+    .sample::before {
+      content: "";
+      position: absolute;
+      width: 150px;
+      height: 280px;
+      left: 50%;
+      top: 72px;
+      transform: translateX(-50%) rotate(8deg);
+      border: 10px solid var(--paper);
+      border-radius: 24px 24px 60px 60px;
+      background: linear-gradient(to top, var(--coral) 0 36%, transparent 36%);
+      box-shadow: 0 25px 50px #176b5220;
+    }
+    .sample::after {
+      content: "One small sample.\\A A clearer health picture.";
+      white-space: pre;
+      position: absolute;
+      inset: auto 0 30px;
+      color: var(--green);
+      text-align: center;
+      font-family: Georgia, serif;
+      font-size: 1.15rem;
+    }
+    .trust {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1px;
+      border: 1px solid var(--line);
+      background: var(--line);
+    }
+    .trust div { padding: 22px; background: var(--paper); }
+    .trust strong { display: block; }
+    .trust span { color: var(--muted); font-size: .88rem; }
+    section { padding: 88px 0; }
+    .section-head { display: flex; justify-content: space-between; gap: 30px; align-items: end; margin-bottom: 30px; }
+    h2 { margin: 0; font: 500 clamp(2.2rem, 5vw, 4rem)/1 Georgia, serif; letter-spacing: -.045em; }
+    .section-head p { max-width: 440px; margin: 0; color: var(--muted); }
+    .kits { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+    .kit {
+      display: flex;
+      min-height: 370px;
+      flex-direction: column;
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: var(--paper);
+    }
+    .kit:nth-child(2) { background: var(--ink); color: white; }
+    .kit small { color: var(--coral); font-weight: 800; text-transform: uppercase; letter-spacing: .1em; }
+    .kit h3 { margin: 18px 0 8px; font: 500 2rem/1.05 Georgia, serif; }
+    .kit p { color: var(--muted); }
+    .kit:nth-child(2) p { color: #b8c7c2; }
+    .markers { padding: 0; list-style: none; color: var(--muted); }
+    .markers li { padding: 7px 0; border-bottom: 1px solid var(--line); }
+    .kit:nth-child(2) .markers li { border-color: #ffffff20; }
+    .price { margin-top: auto; font-size: 1.4rem; font-weight: 850; }
+    footer { padding: 36px 0; border-top: 1px solid var(--line); color: var(--muted); font-size: .85rem; }
+    @media (max-width: 800px) {
+      nav { display: none; }
+      .hero { grid-template-columns: 1fr; padding-top: 40px; }
+      .sample { min-height: 360px; }
+      .trust, .kits { grid-template-columns: 1fr; }
+      .section-head { align-items: start; flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div class="brand">VitaTrace<i>•</i></div>
+      <nav aria-label="Primary navigation">
+        <a href="#kits">Tests</a>
+        <a href="#how">How it works</a>
+        <a href="#science">Our science</a>
+      </nav>
+      <a class="button" href="#kits">Shop tests</a>
+    </header>
+
+    <main>
+      <div class="hero">
+        <div>
+          <div class="eyebrow">Know your baseline</div>
+          <h1>Your health, in sharper focus.</h1>
+          <p class="lead">Clinician-reviewed blood testing from the comfort of home. See the signals behind your energy, recovery, heart health, and more.</p>
+          <div class="actions">
+            <a class="button primary" href="#kits">Find your test</a>
+            <a class="button" href="#how">How it works</a>
+          </div>
+        </div>
+        <div class="sample" role="img" aria-label="Stylized blood sample vial"></div>
+      </div>
+
+      <div class="trust" id="science">
+        <div><strong>CLIA-certified labs</strong><span>Your sample is processed by accredited partners.</span></div>
+        <div><strong>Clinician reviewed</strong><span>Every result is checked before release.</span></div>
+        <div><strong>Private by design</strong><span>Your health data stays encrypted and yours.</span></div>
+      </div>
+
+      <section id="kits">
+        <div class="section-head">
+          <h2>Choose your health lens.</h2>
+          <p>Simple panels, useful context, and clear next steps—without a waiting room.</p>
+        </div>
+        <div class="kits">
+          <article class="kit">
+            <small>Everyday baseline</small>
+            <h3>Essential Health</h3>
+            <p>A broad snapshot of the markers that shape everyday wellbeing.</p>
+            <ul class="markers"><li>Cholesterol &amp; triglycerides</li><li>Blood sugar</li><li>Liver &amp; kidney function</li><li>Complete blood count</li></ul>
+            <div class="price">$99</div>
+          </article>
+          <article class="kit">
+            <small>Most comprehensive</small>
+            <h3>Whole Body</h3>
+            <p>A deeper view across metabolic, hormonal, nutritional, and cardiovascular health.</p>
+            <ul class="markers"><li>Everything in Essential</li><li>Thyroid &amp; hormones</li><li>Vitamin D, B12 &amp; iron</li><li>Inflammation markers</li></ul>
+            <div class="price">$229</div>
+          </article>
+          <article class="kit">
+            <small>Performance</small>
+            <h3>Energy + Recovery</h3>
+            <p>Explore common biological factors behind fatigue and slow recovery.</p>
+            <ul class="markers"><li>Iron &amp; ferritin</li><li>Vitamin D &amp; B12</li><li>Thyroid function</li><li>Magnesium</li></ul>
+            <div class="price">$139</div>
+          </article>
+        </div>
+      </section>
+
+      <section id="how">
+        <div class="section-head">
+          <h2>Three steps. Real answers.</h2>
+          <p>Order online, visit a nearby collection partner, and review your dashboard when results are ready.</p>
+        </div>
+      </section>
+    </main>
+
+    <footer>For wellness information only; not a substitute for emergency care or a medical diagnosis. Test catalog and prices are mock data.</footer>
+  </div>
+</body>
+</html>

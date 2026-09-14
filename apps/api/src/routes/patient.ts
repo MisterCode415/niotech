@@ -8,23 +8,22 @@ import {
   files,
   kits,
   labResults,
-  memberships,
   orders,
   packageTestTypes,
   packages,
   shipments,
-  users,
+  testTypes,
 } from '../db/schema.js';
 import { badRequest, forbidden, notFound } from '../lib/errors.js';
-import { generateOrderNumber, generateQrToken } from '../lib/ids.js';
+import { generateOrderNumber } from '../lib/ids.js';
 import { getOrderDetail } from '../services/orderQueries.js';
 import { paymentProvider } from '../services/payments.js';
-import { dispatchNotifications, type NotificationIntent } from '../services/notifications.js';
+import { dispatchNotifications } from '../services/notifications.js';
+import { dispatchPaidOrder } from '../services/paidOrder.js';
 import {
   recordEvent,
   setKitStatus,
   syncOrderFromKits,
-  transitionOrder,
 } from '../services/orderWorkflow.js';
 import { storage } from '../services/storage.js';
 
@@ -71,6 +70,19 @@ export async function patientRoutes(app: FastifyInstance) {
         .limit(1);
       if (!pkg) throw notFound('Package not available');
 
+      const composition = await tx
+        .select({
+          testTypeId: testTypes.id,
+          name: testTypes.name,
+          sampleType: testTypes.sampleType,
+          turnaroundDays: testTypes.turnaroundDays,
+          quantity: packageTestTypes.quantity,
+        })
+        .from(packageTestTypes)
+        .innerJoin(testTypes, eq(testTypes.id, packageTestTypes.testTypeId))
+        .where(eq(packageTestTypes.packageId, pkg.id));
+      if (composition.length === 0) throw badRequest('Package has no test types configured');
+
       const [created] = await tx
         .insert(orders)
         .values({
@@ -81,6 +93,15 @@ export async function patientRoutes(app: FastifyInstance) {
           status: 'pending_payment',
           priceCents: pkg.priceCents,
           paymentStatus: 'unpaid',
+          packageSnapshot: {
+            packageName: pkg.name,
+            packageVersion: pkg.version,
+            priceCents: pkg.priceCents,
+            requiresClinician: pkg.requiresClinician,
+            internalReference: pkg.internalReference,
+            externalProductId: pkg.externalProductId,
+            tests: composition,
+          },
           shippingAddress: input.shippingAddress,
           shippingMethod: input.shippingMethod,
           requiresClinician: pkg.requiresClinician,
@@ -133,68 +154,13 @@ export async function patientRoutes(app: FastifyInstance) {
         throw badRequest('Payment was declined');
       }
 
-      await tx
-        .update(orders)
-        .set({ paymentStatus: 'paid', paymentReference: charge.reference })
-        .where(eq(orders.id, order.id));
-
-      await transitionOrder(
-        tx,
-        { businessUnitId: ctx.businessUnitId, actorRole: 'patient', actorUserId: ctx.userId },
-        { orderId: order.id, to: 'paid', message: `Payment captured (${charge.reference})` },
-      );
-
-      // One kit per required test unit, each with its own QR identity.
-      const composition = await tx
-        .select({ testTypeId: packageTestTypes.testTypeId, quantity: packageTestTypes.quantity })
-        .from(packageTestTypes)
-        .where(eq(packageTestTypes.packageId, order.packageId));
-
-      let kitNumber = 0;
-      const kitValues = composition.flatMap((entry) =>
-        Array.from({ length: entry.quantity }, () => {
-          kitNumber += 1;
-          return {
-            businessUnitId: ctx.businessUnitId,
-            orderId: order.id,
-            testTypeId: entry.testTypeId,
-            kitNumber,
-            qrToken: generateQrToken(),
-            status: 'awaiting_fulfillment' as const,
-          };
-        }),
-      );
-
-      if (kitValues.length === 0) throw badRequest('Package has no test types configured');
-      await tx.insert(kits).values(kitValues);
-
-      await transitionOrder(
-        tx,
-        { businessUnitId: ctx.businessUnitId, actorRole: 'system', actorUserId: null },
-        {
-          orderId: order.id,
-          to: 'dispatched_to_fulfillment',
-          message: `Dispatched to fulfillment with ${kitValues.length} kit(s)`,
-          metadata: { kitCount: kitValues.length },
-        },
-      );
-
-      const fulfillmentTeam = await tx
-        .select({ userId: users.id, email: users.email })
-        .from(memberships)
-        .innerJoin(users, eq(users.id, memberships.userId))
-        .where(and(eq(memberships.role, 'fulfillment'), eq(memberships.status, 'active')));
-
-      const notificationIntents: NotificationIntent[] = fulfillmentTeam.map((member) => ({
+      const notificationIntents = await dispatchPaidOrder(tx, {
         businessUnitId: ctx.businessUnitId,
-        userId: member.userId,
-        email: member.email,
-        type: 'order_dispatched',
-        title: `New order to ship: ${order.orderNumber}`,
-        body: `Order ${order.orderNumber} is paid and ready to ship (${kitValues.length} kit(s), ${order.shippingMethod}).`,
-        linkPath: `/portal/fulfillment/orders/${order.id}`,
-        orderId: order.id,
-      }));
+        order,
+        paymentReference: charge.reference,
+        actorRole: 'patient',
+        actorUserId: ctx.userId,
+      });
 
       return { status: 'dispatched_to_fulfillment' as const, intents: notificationIntents };
     });

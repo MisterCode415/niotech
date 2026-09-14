@@ -59,12 +59,16 @@ export const createTestTypeSchema = z.object({
 });
 export type CreateTestTypeInput = z.infer<typeof createTestTypeSchema>;
 
-export const createPackageSchema = z.object({
+const packageFieldsSchema = z.object({
   name: z.string().min(1).max(120),
   description: z.string().max(4000).optional(),
   priceCents: z.coerce.number().int().min(0),
   requiresClinician: z.boolean(),
   focusArea: z.string().max(120).optional(),
+  internalReference: z.string().min(1).max(120).optional(),
+  externalProductId: z.string().min(1).max(200).optional(),
+  externalPurchaseUrl: z.url().max(2000).optional(),
+  status: z.enum(['draft', 'active']).default('draft'),
   tests: z
     .array(
       z.object({
@@ -74,7 +78,10 @@ export const createPackageSchema = z.object({
     )
     .min(1, 'A package needs at least one test type'),
 });
+export const createPackageSchema = packageFieldsSchema;
 export type CreatePackageInput = z.infer<typeof createPackageSchema>;
+export const updatePackageSchema = packageFieldsSchema;
+export type UpdatePackageInput = z.infer<typeof updatePackageSchema>;
 
 export const createMemberSchema = z.object({
   email: z.email(),
@@ -88,6 +95,8 @@ export type CreateMemberInput = z.infer<typeof createMemberSchema>;
 export const registerPatientSchema = z.object({
   email: z.email(),
   name: z.string().min(1).max(120),
+  /** Preserves a purchase-driven registration destination without accepting an arbitrary URL. */
+  packageId: z.uuid().optional(),
 });
 
 export const createOrderSchema = z.object({
@@ -97,10 +106,40 @@ export const createOrderSchema = z.object({
 });
 export type CreateOrderInput = z.infer<typeof createOrderSchema>;
 
+export interface OrderPackageSnapshot {
+  packageName: string;
+  packageVersion: number;
+  priceCents: number;
+  requiresClinician: boolean;
+  internalReference: string | null;
+  externalProductId: string | null;
+  tests: Array<{
+    testTypeId: string;
+    name: string;
+    sampleType: string;
+    turnaroundDays: number;
+    quantity: number;
+  }>;
+}
+
 export const payOrderSchema = z.object({
   // The mock provider ignores this, but the shape matches what a real tokenized card gives us.
   paymentToken: z.string().default('mock-token'),
 });
+
+export const externalPurchaseSchema = z.object({
+  source: z.string().min(1).max(80).regex(/^[a-z0-9_-]+$/),
+  externalOrderId: z.string().min(1).max(200),
+  externalPaymentId: z.string().min(1).max(200),
+  packageReference: z.string().min(1).max(200),
+  patient: z.object({
+    email: z.email(),
+    name: z.string().min(1).max(120),
+  }),
+  shippingAddress: addressSchema,
+  shippingMethod: shippingMethodSchema.default('ground'),
+});
+export type ExternalPurchaseInput = z.infer<typeof externalPurchaseSchema>;
 
 /* -------------------------------- Fulfillment -------------------------------- */
 

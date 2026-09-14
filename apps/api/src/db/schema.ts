@@ -9,6 +9,7 @@ import {
   jsonb,
   index,
   uniqueIndex,
+  type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 import {
@@ -22,6 +23,7 @@ import {
   ORDER_ISSUE_REASONS,
   CLINICIAN_DECISIONS,
   type Address,
+  type OrderPackageSnapshot,
 } from '@nio/shared';
 
 /* ---------------------------------- Enums ---------------------------------- */
@@ -173,13 +175,30 @@ export const packages = pgTable(
     name: text('name').notNull(),
     description: text('description'),
     focusArea: text('focus_area'),
+    internalReference: text('internal_reference'),
+    externalProductId: text('external_product_id'),
+    externalPurchaseUrl: text('external_purchase_url'),
     priceCents: integer('price_cents').notNull(),
     /** Drives the branch after lab completion: doctor queue vs. straight to the patient. */
     requiresClinician: boolean('requires_clinician').notNull().default(false),
     status: packageStatusEnum('status').notNull().default('active'),
+    version: integer('version').notNull().default(1),
+    supersedesPackageId: uuid('supersedes_package_id').references(
+      (): AnyPgColumn => packages.id,
+      { onDelete: 'set null' },
+    ),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('packages_bu_status_idx').on(t.businessUnitId, t.status)],
+  (t) => [
+    index('packages_bu_status_idx').on(t.businessUnitId, t.status),
+    uniqueIndex('packages_bu_internal_reference_version_key').on(
+      t.businessUnitId,
+      t.internalReference,
+      t.version,
+    ),
+    uniqueIndex('packages_bu_external_product_key').on(t.businessUnitId, t.externalProductId),
+  ],
 );
 
 /** How many kits of each test type a package ships. */
@@ -218,6 +237,10 @@ export const orders = pgTable(
     priceCents: integer('price_cents').notNull(),
     paymentStatus: paymentStatusEnum('payment_status').notNull().default('unpaid'),
     paymentReference: text('payment_reference'),
+    packageSnapshot: jsonb('package_snapshot').$type<OrderPackageSnapshot>().notNull(),
+    orderSource: text('order_source').notNull().default('native'),
+    externalOrderId: text('external_order_id'),
+    externalPaymentId: text('external_payment_id'),
     shippingAddress: jsonb('shipping_address').$type<Address>().notNull(),
     shippingMethod: shippingMethodEnum('shipping_method').notNull().default('ground'),
     /** The fulfillment partner's own order id, entered by them so both ends reconcile. */
@@ -229,6 +252,11 @@ export const orders = pgTable(
   },
   (t) => [
     uniqueIndex('orders_order_number_key').on(t.orderNumber),
+    uniqueIndex('orders_bu_source_external_key').on(
+      t.businessUnitId,
+      t.orderSource,
+      t.externalOrderId,
+    ),
     index('orders_bu_status_idx').on(t.businessUnitId, t.status),
     index('orders_patient_idx').on(t.patientUserId),
   ],

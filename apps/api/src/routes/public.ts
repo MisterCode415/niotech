@@ -8,7 +8,6 @@ import { sendInvitationEmail } from '../services/notifications.js';
 import { withPlatformScope, withTenant } from '../db/client.js';
 import { conflict } from '../lib/errors.js';
 import {
-  businessUnits,
   marketingPages,
   memberships,
   packageTestTypes,
@@ -20,18 +19,6 @@ import {
 const slugParam = z.object({ slug: z.string() });
 
 export async function publicRoutes(app: FastifyInstance) {
-  /** Directory of active tenants; the storefront entry point during local development. */
-  app.get('/api/public/business-units', async () => {
-    const rows = await withPlatformScope((tx) =>
-      tx
-        .select({ name: businessUnits.name, slug: businessUnits.slug })
-        .from(businessUnits)
-        .where(eq(businessUnits.status, 'active'))
-        .orderBy(businessUnits.name),
-    );
-    return { businessUnits: rows };
-  });
-
   /**
    * Login hand-off. Auth0 needs the organization at the moment it redirects, before anyone is
    * authenticated, so the mapping from a public slug to its organization has to be readable
@@ -106,69 +93,89 @@ export async function publicRoutes(app: FastifyInstance) {
    * Patient self-registration. A patient is a member of one business unit's roster like any other
    * role, which is what keeps their orders and results inside that tenant.
    */
-  app.post('/api/public/:slug/register', async (request, reply) => {
-    const { slug } = slugParam.parse(request.params);
-    const businessUnit = await findPublicBusinessUnit(slug);
-    const input = registerPatientSchema.parse(request.body);
+  app.post(
+    '/api/public/:slug/register',
+    { config: { rateLimit: { max: 5, timeWindow: '1 hour' } } },
+    async (request, reply) => {
+      const { slug } = slugParam.parse(request.params);
+      const businessUnit = await findPublicBusinessUnit(slug);
+      const input = registerPatientSchema.parse(request.body);
 
-    const invited = await authProvider().inviteUser({
-      orgId: businessUnit.auth0OrgId,
-      email: input.email,
-      name: input.name,
-      loginPath: `/login?org=${encodeURIComponent(slug)}`,
-    });
+      const packageId = input.packageId;
+      if (packageId) {
+        const [available] = await withTenant(businessUnit.id, (tx) =>
+          tx
+            .select({ id: packages.id })
+            .from(packages)
+            .where(and(eq(packages.id, packageId), eq(packages.status, 'active')))
+            .limit(1),
+        );
+        if (!available) throw conflict('Package is not available');
+      }
 
-    /*
-     * This endpoint is unauthenticated, so the link is only ever delivered to the address itself,
-     * never returned in the response. Registering with an address that is already verified sends
-     * nothing while still answering 201, so the reply cannot be used to enumerate accounts.
-     */
-    if (invited.passwordSetUrl && invited.signInUrl) {
-      await sendInvitationEmail({
+      const returnTo = input.packageId
+        ? `/${slug}/checkout/${input.packageId}`
+        : '/portal/orders';
+      const invited = await authProvider().inviteUser({
+        orgId: businessUnit.auth0OrgId,
         email: input.email,
         name: input.name,
-        passwordSetUrl: invited.passwordSetUrl,
-        signInUrl: invited.signInUrl,
+        loginPath:
+          `/login?org=${encodeURIComponent(slug)}` +
+          `&returnTo=${encodeURIComponent(returnTo)}`,
       });
-    }
 
-    const result = await withPlatformScope(async (tx) => {
-      const [user] = await tx
-        .insert(users)
-        .values({
+      /*
+       * Always send the result to the asserted address and return the same generic response.
+       * Existing users receive a membership/sign-in notice; new users receive activation.
+       */
+      if (invited.signInUrl) {
+        await sendInvitationEmail({
           email: input.email,
           name: input.name,
-          auth0UserId: invited.subject,
-          status: 'active',
-        })
-        .onConflictDoUpdate({ target: users.email, set: { name: input.name } })
-        .returning();
-
-      if (user!.auth0UserId !== invited.subject) {
-        throw conflict('That email is already bound to a different identity');
+          passwordSetUrl: invited.passwordSetUrl,
+          signInUrl: invited.signInUrl,
+          workspaceName: businessUnit.name,
+          roleLabel: 'Patient',
+        });
       }
 
-      const [existing] = await tx
-        .select()
-        .from(memberships)
-        .where(
-          and(
-            eq(memberships.userId, user!.id),
-            eq(memberships.businessUnitId, businessUnit.id),
-            eq(memberships.role, 'patient'),
-          ),
-        )
-        .limit(1);
+      await withPlatformScope(async (tx) => {
+        const [user] = await tx
+          .insert(users)
+          .values({
+            email: input.email,
+            name: input.name,
+            auth0UserId: invited.subject,
+            status: 'active',
+          })
+          .onConflictDoUpdate({ target: users.email, set: { name: input.name } })
+          .returning();
 
-      if (!existing) {
-        await tx
-          .insert(memberships)
-          .values({ userId: user!.id, businessUnitId: businessUnit.id, role: 'patient' });
-      }
+        if (user!.auth0UserId !== invited.subject) {
+          throw conflict('That email is already bound to a different identity');
+        }
 
-      return { userId: user!.id, email: user!.email, name: user!.name };
-    });
+        const [existing] = await tx
+          .select()
+          .from(memberships)
+          .where(
+            and(
+              eq(memberships.userId, user!.id),
+              eq(memberships.businessUnitId, businessUnit.id),
+              eq(memberships.role, 'patient'),
+            ),
+          )
+          .limit(1);
 
-    return reply.status(201).send(result);
-  });
+        if (!existing) {
+          await tx
+            .insert(memberships)
+            .values({ userId: user!.id, businessUnitId: businessUnit.id, role: 'patient' });
+        }
+      });
+
+      return reply.status(202).send({ accepted: true });
+    },
+  );
 }
