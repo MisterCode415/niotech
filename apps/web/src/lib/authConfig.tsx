@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import { useNavigate } from 'react-router-dom';
 import { Auth0Provider, type AppState } from '@auth0/auth0-react';
 import { api } from './api';
+import { safeReturnTo } from './returnTo';
 
 export interface AuthConfig {
   provider: 'dev' | 'auth0';
@@ -9,6 +10,8 @@ export interface AuthConfig {
   domain?: string;
   clientId?: string;
   audience?: string;
+  /** The server allows seeding and clearing mock orders. */
+  simulationEnabled?: boolean;
 }
 
 const AuthConfigContext = createContext<AuthConfig>({ provider: 'dev' });
@@ -66,7 +69,7 @@ export function AuthConfigGate({ children }: { children: ReactNode }) {
         // Replaces the entry so the callback URL, complete with its authorization code, does not
         // sit in history where a back button would replay a spent code.
         onRedirectCallback={(appState?: AppState) =>
-          navigate(appState?.returnTo ?? '/portal', { replace: true })
+          navigate(safeReturnTo(appState?.returnTo), { replace: true })
         }
       >
         {children}

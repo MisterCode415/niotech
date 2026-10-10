@@ -22,6 +22,12 @@ export function generateQrToken(): string {
   return randomBytes(16).toString('base64url');
 }
 
+/** 40 bits, printed as `QK-XXXX-XXXX` so someone can read it off a box and type it in. */
+export function generateKitSerial(): string {
+  const code = randomCode(8);
+  return `QK-${code.slice(0, 4)}-${code.slice(4)}`;
+}
+
 export function generateStorageKey(businessUnitId: string, filename: string): string {
   const ext = filename.includes('.') ? `.${filename.split('.').pop()}` : '';
   return `${businessUnitId}/${randomUUID()}${ext}`;

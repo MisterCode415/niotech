@@ -1,11 +1,11 @@
-import { useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { useEffect, useRef, useState } from 'react';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api';
 import { date, bytes } from '../../lib/format';
-import { useAuth } from '../../lib/auth';
 import {
   Loading,
+  MockBadge,
   StatusBadge,
   Timeline,
   Alert,
@@ -17,28 +17,45 @@ interface Detail {
   order: {
     id: string;
     orderNumber: string;
+    isMock?: boolean;
     status: string;
     packageName: string;
     packageFocusArea: string | null;
     patientName: string;
     requiresClinician: boolean;
   };
-  kits: Array<{ id: string; kitNumber: number; status: string; testTypeName: string; sampleType: string }>;
+  kits: Array<{
+    id: string;
+    kitNumber: number;
+    serial: string;
+    status: string;
+    testTypeName: string;
+    sampleType: string;
+  }>;
   events: TimelineEvent[];
-  results: Array<{ id: string; kitId: string; filename: string | null; sizeBytes: number | null; completedAt: string | null }>;
+  results: Array<{
+    id: string;
+    kitId: string;
+    filename: string | null;
+    sizeBytes: number | null;
+    completedAt: string | null;
+  }>;
 }
 
 export function LabOrder() {
   const { orderId = '' } = useParams();
-  const { me } = useAuth();
   const queryClient = useQueryClient();
 
-  const slug = me?.memberships.find((m) => m.role === 'lab')?.businessUnitSlug;
+  const { slug } = useParams();
   const [file, setFile] = useState<File | null>(null);
   const [summary, setSummary] = useState('');
   const [uploadedFileId, setUploadedFileId] = useState<string | null>(null);
   const [message, setMessage] = useState('');
   const [isError, setIsError] = useState(false);
+  // Set when a scan forwards the lab here: the kit just picked up is the one to upload for.
+  const [searchParams] = useSearchParams();
+  const focusKitId = searchParams.get('kit');
+  const uploadRef = useRef<HTMLDivElement>(null);
 
   const { data, isLoading } = useQuery({
     queryKey: ['lab', 'order', orderId],
@@ -89,18 +106,28 @@ export function LabOrder() {
     onError: fail,
   });
 
+  const loaded = Boolean(data);
+  useEffect(() => {
+    if (loaded && focusKitId)
+      uploadRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [loaded, focusKitId]);
+
   if (isLoading || !data) return <Loading what="order" />;
 
   const onBench = data.kits.filter((k) => ['received_by_lab', 'processing'].includes(k.status));
+  const focusKit = data.kits.find((k) => k.id === focusKitId) ?? null;
+  const focusOnBench = focusKit ? onBench.some((k) => k.id === focusKit.id) : false;
 
   return (
     <>
       <div className="page-header">
         <div>
-          <Link to="/portal/lab" className="small muted">
+          <Link to={`/w/${slug}/lab`} className="small muted">
             ← Lab queue
           </Link>
-          <h1 style={{ marginTop: 8 }}>{data.order.orderNumber}</h1>
+          <h1 style={{ marginTop: 8 }}>
+            {data.order.orderNumber} <MockBadge show={data.order.isMock} />
+          </h1>
           <p>
             {data.order.packageName} · {data.order.patientName}
             {data.order.packageFocusArea ? ` · ${data.order.packageFocusArea}` : ''}
@@ -110,6 +137,17 @@ export function LabOrder() {
       </div>
 
       <Alert tone={isError ? 'error' : 'success'}>{message}</Alert>
+
+      {focusKit ? (
+        <Alert tone="info">
+          Kit #{focusKit.kitNumber} ({focusKit.serial}){' '}
+          {focusOnBench
+            ? 'is at the lab. Upload its results below.'
+            : focusKit.status === 'lab_complete'
+              ? 'is already complete.'
+              : 'is not on the bench yet.'}
+        </Alert>
+      ) : null}
 
       {data.order.requiresClinician ? (
         <Alert tone="info">
@@ -123,7 +161,7 @@ export function LabOrder() {
       )}
 
       <div className="grid cols-2">
-        <div className="card stack">
+        <div className="card stack" ref={uploadRef}>
           <div>
             <div className="card-title">Upload results</div>
             <Field label="Results PDF">
@@ -158,12 +196,17 @@ export function LabOrder() {
             ) : (
               <div className="stack">
                 {onBench.map((kit) => (
-                  <div key={kit.id} className="kit-card spread">
+                  <div
+                    key={kit.id}
+                    className={`kit-card spread${kit.id === focusKitId ? ' focused' : ''}`}
+                  >
                     <div>
                       <strong>
                         Kit {kit.kitNumber} · {kit.testTypeName}
                       </strong>
-                      <div className="small muted">{kit.sampleType}</div>
+                      <div className="small muted">
+                        {kit.sampleType} · <span className="mono">{kit.serial}</span>
+                      </div>
                     </div>
                     <button
                       className="primary small"
@@ -183,9 +226,14 @@ export function LabOrder() {
           <div className="card">
             <div className="card-title">Kits</div>
             {data.kits.map((kit) => (
-              <div key={kit.id} className="spread small" style={{ marginBottom: 6 }}>
+              <div
+                key={kit.id}
+                className="spread small"
+                style={{ marginBottom: 6, fontWeight: kit.id === focusKitId ? 600 : undefined }}
+              >
                 <span>
-                  #{kit.kitNumber} {kit.testTypeName}
+                  #{kit.kitNumber} {kit.testTypeName}{' '}
+                  <span className="mono muted">{kit.serial}</span>
                 </span>
                 <StatusBadge status={kit.status} kind="kit" />
               </div>

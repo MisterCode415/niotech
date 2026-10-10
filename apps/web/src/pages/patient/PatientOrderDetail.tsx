@@ -3,9 +3,9 @@ import { Link, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, fetchBlobUrl } from '../../lib/api';
 import { money, date, bytes } from '../../lib/format';
-import { useAuth } from '../../lib/auth';
 import {
   Loading,
+  MockBadge,
   Empty,
   StatusBadge,
   Timeline,
@@ -18,6 +18,7 @@ interface Detail {
   order: {
     id: string;
     orderNumber: string;
+    isMock?: boolean;
     status: string;
     priceCents: number;
     shippingAddress: Parameters<typeof AddressBlock>[0]['address'];
@@ -29,6 +30,7 @@ interface Detail {
   kits: Array<{
     id: string;
     kitNumber: number;
+    serial: string;
     status: string;
     testTypeName: string;
     sampleType: string;
@@ -52,11 +54,10 @@ interface Detail {
 
 export function PatientOrderDetail() {
   const { orderId = '' } = useParams();
-  const { me } = useAuth();
   const queryClient = useQueryClient();
   const [error, setError] = useState('');
 
-  const slug = me?.memberships.find((m) => m.role === 'patient')?.businessUnitSlug;
+  const { slug } = useParams();
   const base = `/api/bu/${slug}/patient/orders/${orderId}`;
 
   const { data, isLoading } = useQuery({
@@ -84,11 +85,11 @@ export function PatientOrderDetail() {
     <>
       <div className="page-header">
         <div>
-          <Link to="/portal/orders" className="small muted">
+          <Link to={`/w/${slug}/patient/orders`} className="small muted">
             ← All orders
           </Link>
           <h1 style={{ marginTop: 8 }}>{data.order.packageName}</h1>
-          <p className="mono">{data.order.orderNumber}</p>
+          <p className="mono">{data.order.orderNumber} <MockBadge show={data.order.isMock} /></p>
         </div>
         <StatusBadge status={data.order.status} />
       </div>
@@ -113,6 +114,7 @@ export function PatientOrderDetail() {
                           Kit {kit.kitNumber} · {kit.testTypeName}
                         </strong>
                         <div className="small muted">{kit.sampleType} sample</div>
+                        <div className="small muted mono">Serial {kit.serial}</div>
                       </div>
                       <StatusBadge status={kit.status} kind="kit" />
                     </div>

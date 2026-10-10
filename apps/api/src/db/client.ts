@@ -19,6 +19,8 @@ export interface TenantDatabaseContext {
   businessUnitId: string;
   userId: string;
   actorRole: ActorRole;
+  /** Email of a platform admin acting inside this tenant; stamped onto every order event. */
+  actingAsPlatformAdmin?: string | null;
 }
 
 /**
@@ -42,7 +44,8 @@ export async function withTenant<T>(
         set_config('app.business_unit_id', ${context.businessUnitId}, true),
         set_config('app.user_id', ${context.userId}, true),
         set_config('app.actor_role', ${context.actorRole}, true),
-        set_config('app.tenant_scope', '', true)
+        set_config('app.tenant_scope', '', true),
+        set_config('app.acting_platform_admin', ${context.actingAsPlatformAdmin ?? ''}, true)
     `);
     return fn(tx);
   });

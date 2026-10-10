@@ -1,87 +1,66 @@
 import { NavLink, Outlet, Link } from 'react-router-dom';
-import { ROLE_LABELS, type MembershipRole } from '@nio/shared';
+import { ROLE_LABELS, workspacePath, type MembershipRole } from '@nio/shared';
 import { useAuth } from '../lib/auth';
+import { useWorkspace } from '../lib/workspace';
 import { NotificationBell } from './NotificationBell';
+import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 
 interface NavItem {
   to: string;
   label: string;
+  end?: boolean;
 }
 
-/** Each role gets only its own portal in the nav; the API enforces the same boundary. */
-function navFor(
-  role: MembershipRole,
-  slug: string,
-): NavItem[] {
+/** Only the current workspace's role contributes navigation; the API enforces the same boundary. */
+function navFor(role: MembershipRole, slug: string): NavItem[] {
+  const at = (subPath = '') => workspacePath(slug, role, subPath);
   switch (role) {
     case 'bu_admin':
       return [
-        { to: `/portal/admin/${slug}`, label: 'Overview' },
-        { to: `/portal/admin/${slug}/packages`, label: 'Packages' },
-        { to: `/portal/admin/${slug}/marketing`, label: 'Marketing page' },
-        { to: `/portal/admin/${slug}/team`, label: 'Team' },
-        { to: `/portal/admin/${slug}/orders`, label: 'Orders' },
+        { to: at(), label: 'Overview', end: true },
+        { to: at('/orders'), label: 'Orders' },
+        { to: at('/packages'), label: 'Packages' },
+        { to: at('/team'), label: 'Team' },
+        { to: at('/payments'), label: 'Payments' },
+        { to: at('/marketing'), label: 'Marketing page' },
       ];
     case 'patient':
       return [
-        { to: '/portal/orders', label: 'My orders' },
+        { to: at(), label: 'My orders' },
         { to: `/${slug}`, label: 'Shop' },
       ];
     case 'fulfillment':
       return [
-        { to: '/portal/fulfillment', label: 'Order queue' },
-        { to: '/portal/fulfillment/billing', label: 'Billing' },
+        { to: at(), label: 'Order queue', end: true },
+        { to: at('/billing'), label: 'Billing' },
       ];
     case 'lab':
-      return [{ to: '/portal/lab', label: 'Lab queue' }];
+      return [{ to: at(), label: 'Lab queue' }];
     case 'doctor':
-      return [{ to: '/portal/doctor', label: 'Review queue' }];
-    default:
-      return [];
+      return [{ to: at(), label: 'Review queue' }];
   }
 }
 
 export function Layout() {
   const { me, logout } = useAuth();
-
-  const items: NavItem[] = [];
-  if (me?.isPlatformAdmin && !me.activeOrganizationId) {
-    items.push({ to: '/portal/platform', label: 'Platform' });
-  }
-  for (const membership of me?.memberships ?? []) {
-    items.push(...navFor(membership.role, membership.businessUnitSlug));
-  }
-  if (
-    (me?.availableMemberships.length ?? 0) > (me?.memberships.length ?? 0) ||
-    (me?.isPlatformAdmin && Boolean(me.activeOrganizationId))
-  ) {
-    items.push({ to: '/portal', label: 'Workspaces' });
-  }
-
-  const seen = new Set<string>();
-  const uniqueItems = items.filter((item) => {
-    if (seen.has(item.to)) return false;
-    seen.add(item.to);
-    return true;
-  });
-
-  const roles = (me?.memberships ?? []).map(
-    (m) => `${ROLE_LABELS[m.role]} @ ${m.businessUnitName}`,
-  );
+  const workspace = useWorkspace(me);
+  const items = workspace ? navFor(workspace.role, workspace.slug) : [];
 
   return (
     <div className="app-shell">
       <header className="topbar">
-        <Link to="/portal" className="brand">
+        <Link to="/portal?choose" className="brand">
           Qin<span>io</span>
         </Link>
 
+        <WorkspaceSwitcher />
+
         <nav className="topnav">
-          {uniqueItems.map((item) => (
+          {items.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
-              end={item.to.split('/').length <= 3}
+              end={item.end}
               className={({ isActive }) => (isActive ? 'active' : '')}
             >
               {item.label}
@@ -91,14 +70,31 @@ export function Layout() {
 
         <div className="topbar-right">
           <NotificationBell />
-          <div className="small muted" title={roles.join(', ')}>
-            {me?.name}
+          <div className="identity" title={me?.email}>
+            <div className="identity-name">
+              {me?.name}
+              {me?.isPlatformAdmin ? <span className="badge active">Super admin</span> : null}
+            </div>
+            <div className="identity-email small muted mono">{me?.email}</div>
           </div>
           <button className="small" onClick={logout}>
             Sign out
           </button>
         </div>
       </header>
+
+      {workspace?.isActingAs ? (
+        <div className="acting-banner">
+          <span>
+            Acting as <strong>{ROLE_LABELS[workspace.role]}</strong> in{' '}
+            <strong>{workspace.businessUnitName}</strong> as a super admin. Everything you do here
+            is recorded under your name.
+          </span>
+          <Link to="/portal/platform" className="btn small">
+            Exit to Platform
+          </Link>
+        </div>
+      ) : null}
 
       <main className="page">
         <Outlet />

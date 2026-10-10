@@ -4,6 +4,7 @@ import {
   uuid,
   text,
   integer,
+  bigserial,
   boolean,
   timestamp,
   jsonb,
@@ -37,7 +38,18 @@ export const kitStatusEnum = pgEnum('kit_status', KIT_STATUSES);
 export const shippingMethodEnum = pgEnum('shipping_method', SHIPPING_METHODS);
 export const orderIssueReasonEnum = pgEnum('order_issue_reason', ORDER_ISSUE_REASONS);
 export const clinicianDecisionEnum = pgEnum('clinician_decision', CLINICIAN_DECISIONS);
-export const paymentStatusEnum = pgEnum('payment_status', ['unpaid', 'paid', 'refunded', 'failed']);
+export const paymentStatusEnum = pgEnum('payment_status', [
+  'unpaid',
+  'pending',
+  'processing',
+  'paid',
+  'partially_refunded',
+  'refunded',
+  'disputed',
+  'failed',
+  'cancelled',
+  'expired',
+]);
 export const packageStatusEnum = pgEnum('package_status', ['draft', 'active', 'archived']);
 export const shipmentDirectionEnum = pgEnum('shipment_direction', [
   'outbound_to_patient',
@@ -46,6 +58,18 @@ export const shipmentDirectionEnum = pgEnum('shipment_direction', [
 export const issueStatusEnum = pgEnum('issue_status', ['open', 'resolved']);
 export const chargeStatusEnum = pgEnum('charge_status', ['pending', 'batched', 'paid']);
 export const payoutAccountTypeEnum = pgEnum('payout_account_type', ['ach', 'wire', 'invoice']);
+export const paymentAccountStatusEnum = pgEnum('payment_account_status', [
+  'disconnected',
+  'pending',
+  'restricted',
+  'active',
+]);
+export const catalogSyncStatusEnum = pgEnum('catalog_sync_status', [
+  'pending',
+  'syncing',
+  'synced',
+  'failed',
+]);
 
 /* --------------------------------- Platform --------------------------------- */
 
@@ -96,6 +120,10 @@ export const users = pgTable(
     name: text('name').notNull(),
     auth0UserId: text('auth0_user_id'),
     status: userStatusEnum('status').notNull().default('active'),
+    /** Synthetic patients created by the mock flow; never emailed, removed by "Clear mock data". */
+    isMock: boolean('is_mock').notNull().default(false),
+    /** First proof an invitee activated: the API only accepts verified, completed sign-ins. */
+    lastSignInAt: timestamp('last_sign_in_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -183,10 +211,9 @@ export const packages = pgTable(
     requiresClinician: boolean('requires_clinician').notNull().default(false),
     status: packageStatusEnum('status').notNull().default('active'),
     version: integer('version').notNull().default(1),
-    supersedesPackageId: uuid('supersedes_package_id').references(
-      (): AnyPgColumn => packages.id,
-      { onDelete: 'set null' },
-    ),
+    supersedesPackageId: uuid('supersedes_package_id').references((): AnyPgColumn => packages.id, {
+      onDelete: 'set null',
+    }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -215,6 +242,87 @@ export const packageTestTypes = pgTable(
     quantity: integer('quantity').notNull().default(1),
   },
   (t) => [uniqueIndex('package_test_types_key').on(t.packageId, t.testTypeId)],
+);
+
+/* ----------------------------- Stripe Connect commerce ----------------------------- */
+
+export const paymentAccounts = pgTable(
+  'payment_accounts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    businessUnitId: uuid('business_unit_id')
+      .notNull()
+      .references(() => businessUnits.id, { onDelete: 'cascade' }),
+    provider: text('provider').notNull().default('stripe'),
+    providerAccountId: text('provider_account_id'),
+    status: paymentAccountStatusEnum('status').notNull().default('disconnected'),
+    chargesEnabled: boolean('charges_enabled').notNull().default(false),
+    payoutsEnabled: boolean('payouts_enabled').notNull().default(false),
+    detailsSubmitted: boolean('details_submitted').notNull().default(false),
+    country: text('country'),
+    defaultCurrency: text('default_currency'),
+    disabledReason: text('disabled_reason'),
+    oauthStateHash: text('oauth_state_hash'),
+    oauthStateExpiresAt: timestamp('oauth_state_expires_at', { withTimezone: true }),
+    disconnectedAt: timestamp('disconnected_at', { withTimezone: true }),
+    lastSyncError: text('last_sync_error'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('payment_accounts_bu_provider_key').on(t.businessUnitId, t.provider),
+    uniqueIndex('payment_accounts_provider_account_key').on(t.provider, t.providerAccountId),
+  ],
+);
+
+export const packagePaymentMappings = pgTable(
+  'package_payment_mappings',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    businessUnitId: uuid('business_unit_id')
+      .notNull()
+      .references(() => businessUnits.id, { onDelete: 'cascade' }),
+    packageId: uuid('package_id')
+      .notNull()
+      .references(() => packages.id, { onDelete: 'cascade' }),
+    provider: text('provider').notNull().default('stripe'),
+    providerProductId: text('provider_product_id'),
+    providerPriceId: text('provider_price_id'),
+    status: catalogSyncStatusEnum('status').notNull().default('pending'),
+    lastError: text('last_error'),
+    syncedAt: timestamp('synced_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('package_payment_mappings_package_provider_key').on(t.packageId, t.provider),
+    index('package_payment_mappings_bu_status_idx').on(t.businessUnitId, t.status),
+  ],
+);
+
+export const catalogSyncJobs = pgTable(
+  'catalog_sync_jobs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    businessUnitId: uuid('business_unit_id')
+      .notNull()
+      .references(() => businessUnits.id, { onDelete: 'cascade' }),
+    packageId: uuid('package_id')
+      .notNull()
+      .references(() => packages.id, { onDelete: 'cascade' }),
+    provider: text('provider').notNull().default('stripe'),
+    status: catalogSyncStatusEnum('status').notNull().default('pending'),
+    attempts: integer('attempts').notNull().default(0),
+    lastError: text('last_error'),
+    nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('catalog_sync_jobs_package_provider_key').on(t.packageId, t.provider),
+    index('catalog_sync_jobs_bu_status_idx').on(t.businessUnitId, t.status),
+  ],
 );
 
 /* ---------------------------------- Orders ---------------------------------- */
@@ -247,6 +355,8 @@ export const orders = pgTable(
     externalFulfillmentId: text('external_fulfillment_id'),
     requiresClinician: boolean('requires_clinician').notNull().default(false),
     resultsReleasedAt: timestamp('results_released_at', { withTimezone: true }),
+    /** Seeded by the mock flow for round-robin testing; removable in one step. */
+    isMock: boolean('is_mock').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -260,6 +370,59 @@ export const orders = pgTable(
     index('orders_bu_status_idx').on(t.businessUnitId, t.status),
     index('orders_patient_idx').on(t.patientUserId),
   ],
+);
+
+export const payments = pgTable(
+  'payments',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    businessUnitId: uuid('business_unit_id')
+      .notNull()
+      .references(() => businessUnits.id, { onDelete: 'cascade' }),
+    orderId: uuid('order_id')
+      .notNull()
+      .references(() => orders.id, { onDelete: 'cascade' }),
+    provider: text('provider').notNull(),
+    providerAccountId: text('provider_account_id'),
+    checkoutSessionId: text('checkout_session_id'),
+    checkoutAttempt: integer('checkout_attempt').notNull().default(1),
+    paymentIntentId: text('payment_intent_id'),
+    chargeId: text('charge_id'),
+    status: text('status').notNull().default('pending'),
+    amountCents: integer('amount_cents').notNull(),
+    currency: text('currency').notNull().default('usd'),
+    refundedCents: integer('refunded_cents').notNull().default(0),
+    disputedCents: integer('disputed_cents').notNull().default(0),
+    failureCode: text('failure_code'),
+    failureMessage: text('failure_message'),
+    paidAt: timestamp('paid_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('payments_order_provider_key').on(t.orderId, t.provider),
+    uniqueIndex('payments_checkout_session_key').on(t.checkoutSessionId),
+    index('payments_bu_status_idx').on(t.businessUnitId, t.status),
+  ],
+);
+
+export const paymentEvents = pgTable(
+  'payment_events',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    businessUnitId: uuid('business_unit_id')
+      .notNull()
+      .references(() => businessUnits.id, { onDelete: 'cascade' }),
+    paymentId: uuid('payment_id').references(() => payments.id, { onDelete: 'set null' }),
+    provider: text('provider').notNull(),
+    providerEventId: text('provider_event_id').notNull(),
+    eventType: text('event_type').notNull(),
+    livemode: boolean('livemode').notNull().default(false),
+    payload: jsonb('payload').$type<Record<string, unknown>>().notNull(),
+    processedAt: timestamp('processed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('payment_events_provider_event_key').on(t.provider, t.providerEventId)],
 );
 
 export const kits = pgTable(
@@ -278,6 +441,11 @@ export const kits = pgTable(
     kitNumber: integer('kit_number').notNull(),
     /** Opaque 128-bit token printed on the QR sticker. Never a sequential identifier. */
     qrToken: text('qr_token').notNull(),
+    /**
+     * Human-readable `QK-XXXX-XXXX` printed under the QR code for manual entry. It only locates a
+     * kit; access still requires membership in its business unit (and ownership, for patients).
+     */
+    serial: text('serial').notNull(),
     status: kitStatusEnum('status').notNull().default('awaiting_fulfillment'),
     externalKitId: text('external_kit_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -285,6 +453,7 @@ export const kits = pgTable(
   },
   (t) => [
     uniqueIndex('kits_qr_token_key').on(t.qrToken),
+    uniqueIndex('kits_serial_key').on(t.serial),
     uniqueIndex('kits_order_number_key').on(t.orderId, t.kitNumber),
     index('kits_bu_status_idx').on(t.businessUnitId, t.status),
   ],
@@ -316,6 +485,7 @@ export const orderEvents = pgTable(
   'order_events',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    eventSequence: bigserial('event_sequence', { mode: 'number' }).notNull(),
     businessUnitId: uuid('business_unit_id')
       .notNull()
       .references(() => businessUnits.id, { onDelete: 'cascade' }),
@@ -331,7 +501,7 @@ export const orderEvents = pgTable(
     metadata: jsonb('metadata').$type<Record<string, unknown>>(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('order_events_order_idx').on(t.orderId, t.createdAt)],
+  (t) => [index('order_events_order_idx').on(t.orderId, t.eventSequence)],
 );
 
 export const orderIssues = pgTable(

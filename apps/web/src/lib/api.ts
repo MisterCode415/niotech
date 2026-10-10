@@ -23,10 +23,29 @@ export function setTokenResolver(resolver: TokenResolver | null): void {
   resolveToken = resolver ?? (async () => getToken());
 }
 
+type ActAsResolver = (path: string) => string | null;
+
+let resolveActAs: ActAsResolver = () => null;
+
+export function setActAsResolver(resolver: ActAsResolver | null): void {
+  resolveActAs = resolver ?? (() => null);
+}
+
+async function authHeaders(path: string): Promise<Record<string, string>> {
+  const token = await resolveToken();
+  const actAs = resolveActAs(path);
+  return {
+    ...(token ? { authorization: `Bearer ${token}` } : {}),
+    ...(actAs ? { 'x-qinio-act-as': actAs } : {}),
+  };
+}
+
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
     message: string,
+    public readonly code?: string,
+    public readonly details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -35,26 +54,29 @@ export class ApiError extends Error {
 
 async function toError(response: Response): Promise<ApiError> {
   let message = response.statusText || 'Request failed';
+  let code: string | undefined;
+  let details: Record<string, unknown> | undefined;
   try {
     const body = await response.json();
     if (typeof body?.error === 'string') message = body.error;
+    if (typeof body?.code === 'string') code = body.code;
+    if (body?.details && typeof body.details === 'object') details = body.details;
   } catch {
     // Response had no JSON body; the status text is the best we have.
   }
-  return new ApiError(response.status, message);
+  return new ApiError(response.status, message, code, details);
 }
 
 export async function api<T = unknown>(
   path: string,
   options: { method?: string; body?: unknown; raw?: boolean } = {},
 ): Promise<T> {
-  const token = await resolveToken();
   const isFormData = options.body instanceof FormData;
 
   const response = await fetch(path, {
     method: options.method ?? 'GET',
     headers: {
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(await authHeaders(path)),
       ...(options.body !== undefined && !isFormData ? { 'content-type': 'application/json' } : {}),
     },
     body: isFormData
@@ -71,10 +93,7 @@ export async function api<T = unknown>(
 
 /** Authenticated file fetch for PHI documents, which are never linkable directly. */
 export async function fetchBlobUrl(path: string): Promise<string> {
-  const token = await resolveToken();
-  const response = await fetch(path, {
-    headers: token ? { authorization: `Bearer ${token}` } : {},
-  });
+  const response = await fetch(path, { headers: await authHeaders(path) });
   if (!response.ok) throw await toError(response);
   return URL.createObjectURL(await response.blob());
 }

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { workspacePath } from '@nio/shared';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { Alert, Field } from '../components/ui';
@@ -17,7 +18,7 @@ export function Register() {
   const [submitted, setSubmitted] = useState(false);
 
   const packageId = params.get('package');
-  const returnTo = packageId ? `/${slug}/checkout/${packageId}` : '/portal/orders';
+  const returnTo = packageId ? `/${slug}/checkout/${packageId}` : workspacePath(slug, 'patient');
   const signInPath =
     `/login?org=${encodeURIComponent(slug)}` +
     `&returnTo=${encodeURIComponent(returnTo)}`;

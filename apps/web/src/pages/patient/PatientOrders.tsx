@@ -1,13 +1,14 @@
-import { Link } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api';
 import { money, date } from '../../lib/format';
-import { useAuth } from '../../lib/auth';
-import { Loading, Empty, StatusBadge } from '../../components/ui';
+import { MockBadge, Loading, Empty, StatusBadge } from '../../components/ui';
+import { KitSerialEntry } from '../../components/KitSerialEntry';
 
 interface OrderRow {
   id: string;
   orderNumber: string;
+  isMock?: boolean;
   status: string;
   priceCents: number;
   createdAt: string;
@@ -16,9 +17,7 @@ interface OrderRow {
 }
 
 export function PatientOrders() {
-  const { me } = useAuth();
-  const membership = me?.memberships.find((m) => m.role === 'patient');
-  const slug = membership?.businessUnitSlug;
+  const { slug } = useParams();
 
   const { data, isLoading } = useQuery({
     queryKey: ['patient', slug, 'orders'],
@@ -41,6 +40,14 @@ export function PatientOrders() {
         </Link>
       </div>
 
+      <div className="card" style={{ marginBottom: 18 }}>
+        <div className="card-title">Kit arrived? Scan the QR code on the box</div>
+        <p className="small muted" style={{ marginTop: 0 }}>
+          If the code will not scan, enter the serial printed under it instead.
+        </p>
+        <KitSerialEntry buttonLabel="Register kit" />
+      </div>
+
       {(data?.orders.length ?? 0) === 0 ? (
         <Empty>
           You have not ordered a kit yet. <Link to={`/${slug}`}>Browse packages</Link>.
@@ -61,7 +68,9 @@ export function PatientOrders() {
             <tbody>
               {data!.orders.map((order) => (
                 <tr key={order.id}>
-                  <td className="mono">{order.orderNumber}</td>
+                  <td className="mono">
+                    {order.orderNumber} <MockBadge show={order.isMock} />
+                  </td>
                   <td>
                     {order.packageName}
                     {order.requiresClinician ? (
@@ -77,7 +86,7 @@ export function PatientOrders() {
                     <StatusBadge status={order.status} />
                   </td>
                   <td>
-                    <Link className="btn small" to={`/portal/orders/${order.id}`}>
+                    <Link className="btn small" to={`/w/${slug}/patient/orders/${order.id}`}>
                       Open
                     </Link>
                   </td>

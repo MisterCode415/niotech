@@ -1,7 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { and, eq } from 'drizzle-orm';
-import { externalPurchaseSchema } from '@nio/shared';
+import { externalPurchaseSchema, workspacePath } from '@nio/shared';
 import { authProvider } from '../auth/index.js';
 import { findPublicBusinessUnit } from '../auth/context.js';
 import { withPlatformScope, withTenant } from '../db/client.js';
@@ -88,7 +88,7 @@ export async function integrationRoutes(app: FastifyInstance) {
         orgId: businessUnit.auth0OrgId,
         email: input.patient.email,
         name: input.patient.name,
-        loginPath: `/login?org=${encodeURIComponent(slug)}&returnTo=${encodeURIComponent('/portal/orders')}`,
+        loginPath: `/login?org=${encodeURIComponent(slug)}&returnTo=${encodeURIComponent(workspacePath(slug, 'patient'))}`,
       });
       if (invited.signInUrl) {
         await sendInvitationEmail({

@@ -25,12 +25,12 @@ pnpm dev
 `pnpm dev` starts Postgres and Mailpit, applies migrations, seeds demo data, then runs the API and
 the web app together.
 
-| Service           | URL                     |
-| ----------------- | ----------------------- |
-| Web app           | http://localhost:5173   |
-| API               | http://localhost:4000   |
-| Mailpit (email)   | http://localhost:8025   |
-| Postgres          | `localhost:5433`        |
+| Service         | URL                   |
+| --------------- | --------------------- |
+| Web app         | http://localhost:5173 |
+| API             | http://localhost:4000 |
+| Mailpit (email) | http://localhost:8025 |
+| Postgres        | `localhost:5433`      |
 
 Postgres and Mailpit bind to loopback only. Docker otherwise publishes to every interface, which
 would expose the database and the full notification inbox on any machine with a public IP.
@@ -41,19 +41,19 @@ The local identity provider mints its own tokens, so no Auth0 tenant is needed. 
 http://localhost:5173/login and pick a seeded account. Signing in never creates an account — the
 alpha table and each business unit's roster decide who exists.
 
-| Email                       | Role                                |
-| --------------------------- | ----------------------------------- |
-| `admin@niotech.test`        | Platform superadmin                 |
-| `admin@vitality.test`       | Business unit admin (Vitality)      |
-| `patient@vitality.test`     | Patient (Vitality)                  |
-| `fulfillment@vitality.test` | Fulfillment (Vitality)              |
-| `lab@vitality.test`         | Lab (Vitality)                      |
-| `doctor@vitality.test`      | Doctor (Vitality)                   |
-| `admin@metabolic.test`      | Business unit admin (Metabolic Co)  |
+| Email                       | Role                               |
+| --------------------------- | ---------------------------------- |
+| `admin@niotech.test`        | Platform superadmin                |
+| `admin@vitality.test`       | Business unit admin (Vitality)     |
+| `patient@vitality.test`     | Patient (Vitality)                 |
+| `fulfillment@vitality.test` | Fulfillment (Vitality)             |
+| `lab@vitality.test`         | Lab (Vitality)                     |
+| `doctor@vitality.test`      | Doctor (Vitality)                  |
+| `admin@metabolic.test`      | Business unit admin (Metabolic Co) |
 
 ## Walking through the flow
 
-1. **Patient** — from `/vitality`, pick *Metabolic Reset Program*, check out, and pay (simulated).
+1. **Patient** — from `/vitality`, pick _Metabolic Reset Program_, check out, and pay (simulated).
 2. **Fulfillment** — the order appears in the queue. Enter your own order reference, print the QR
    sticker sheet, then mark it shipped with a carrier and tracking number.
 3. **Patient** — open the order and confirm the kit arrived, then that the sample was mailed. In
@@ -63,10 +63,30 @@ alpha table and each business unit's roster decide who exists.
    explanation.
 6. **Patient** — the results and the doctor's interpretation are now on the dashboard.
 
-Ordering *Baseline Metabolic Check* instead skips step 5 entirely: raw results go straight back to
+Ordering _Baseline Metabolic Check_ instead skips step 5 entirely: raw results go straight back to
 the patient, which is the other branch of the flow.
 
 Every email the platform sends is captured in Mailpit rather than delivered.
+
+### Workspaces and acting as another role
+
+Every portal page lives under `/w/:slug/<admin|patient|fulfillment|lab|doctor>`, so the URL says
+which business unit and role you are working as. The switcher in the header lists every workspace
+you can enter, and `/portal` returns you to the last one you used.
+
+The platform superadmin can enter any business unit as any role without being on its roster. The
+web app sends `X-Qinio-Act-As: <slug>:<role>`, the API accepts it only from an organization-less
+superadmin session, a banner shows while it is active, and every order event written that way
+records `actingAsPlatformAdmin` in its metadata.
+
+### Mock flow
+
+With `SIMULATION_ENABLED=true` the admin overview shows **Mock flow** and **Clear mock data**.
+Seeding creates draft mock packages and `mock+…@qinio.invalid` patients, then drives one order to
+each stage — awaiting fulfillment, shipped, delivered, in transit, received, processing, awaiting
+the doctor, released — through the real workflow code. Nothing is charged or emailed, and every
+queue labels those orders **Mock**. Clearing deletes only rows tagged `is_mock` and the mock
+packages, so real data is untouched. Keep the flag off wherever real patients exist.
 
 ## Storefront and commerce model
 
@@ -97,9 +117,91 @@ source, external order/payment IDs, package external reference, patient, and shi
 Replaying the same tenant + source + external order ID returns the original order and never creates
 duplicate kits.
 
-This shared-key adapter is suitable for controlled alpha integrations. A production Stripe,
-Shopify, or custom adapter should verify that provider's signed webhook before translating it into
-this internal contract.
+This shared-key adapter remains available for controlled non-Stripe integrations. Native Qinio
+checkout uses the dedicated verified Stripe Connect webhook described below.
+
+## Stripe Connect payments
+
+Qinio uses Stripe Connect Standard accounts, direct charges, and Stripe-hosted Checkout. Each
+business unit is the merchant for its own patients: its branding appears in Checkout, its connected
+account owns the charge, and its Stripe Dashboard receives the Product, Price, payment, refund, and
+dispute records. RevenueCat is deliberately not used because this platform sells repeatable
+physical test kits with shipping and multi-merchant payouts rather than digital entitlements.
+
+### One-time Stripe platform setup
+
+1. Create or open the Qinio Stripe account and switch the Dashboard to **Test mode**. A bank
+   account is not required to build and test.
+2. Enable **Connect** and select a platform/marketplace model. Configure Qinio branding, support
+   contact, and the countries in which connected businesses may operate.
+3. In Connect settings, register these Standard OAuth redirect URIs:
+   `http://localhost:4000/api/payments/stripe/callback` for local development and
+   `https://dev.qinio.co/api/payments/stripe/callback` for the Azure sandbox.
+4. Copy the test secret key (`sk_test_...`) and test Connect client ID (`ca_...`). Keep both
+   server-side.
+5. Create a **Connected accounts** webhook endpoint at
+   `https://dev.qinio.co/api/webhooks/stripe` (and use Stripe CLI forwarding locally). Subscribe
+   to account, Product, Price, Checkout Session, PaymentIntent, Charge refund, and dispute events.
+6. Copy its signing secret (`whsec_...`). A normal account webhook and a Connect webhook have
+   different signing secrets; Qinio needs the Connect endpoint secret.
+7. Set the Stripe variables documented in `.env.example`, migrate, and restart the API.
+8. Before enabling live mode, obtain Stripe's written approval for the exact health-testing,
+   medical-device, pharmacy, or telehealth activities involved. Stripe lists several of these as
+   restricted businesses. Complete platform review and each business unit's identity, business,
+   bank, tax, and payout onboarding.
+
+Never place patient health information, test names that reveal a diagnosis, clinical intent,
+results, or doctor notes in Stripe metadata. Qinio sends only opaque order/package IDs in metadata.
+
+### Business-unit setup and automation
+
+A business-unit administrator opens **Payments → Connect Stripe**, signs into or creates their own
+Standard Stripe account, and completes Stripe's onboarding. Stripe identity verification, legal
+acceptance, bank details, and underwriting require the owner and cannot be automated.
+
+Everything after that is automated:
+
+- Qinio stores the connected account ID and tracks charge/payout readiness from `account.updated`.
+- Qinio is the package source of truth. Package saves queue an idempotent catalog job; Stripe
+  Product and Price records are created in the connected account. Prices are immutable, so a sold
+  package's successor version gets a new Price while preserving history.
+- A package cannot activate in Stripe mode until its current Price is synchronized.
+- If an owner edits the Product or Price directly in Stripe, the Connect webhook detects drift and
+  the Payments page offers an authoritative Qinio resync.
+- Patient checkout creates a pending Qinio order and a direct-charge Checkout Session in the
+  connected account. The browser redirects to Stripe; no card data reaches Qinio.
+- Only a verified webhook can mark payment paid and call the exactly-once fulfillment dispatch.
+  The success redirect merely polls Qinio for webhook-confirmed state.
+
+`STRIPE_PLATFORM_FEE_BPS=0` collects no Qinio application fee. Set a nonzero basis-point value only
+after commercial agreements define fees, refunds, taxes, disputes, and negative-balance ownership.
+
+### Payment operations
+
+The payment ledger is separate from physical order status. It records pending/processing/paid,
+failure, expiration, partial/full refunds, and disputes without pretending a shipped kit can be
+unshipped. BU admins can reconcile a payment with Stripe and submit full or partial refunds;
+Stripe webhooks remain canonical. Refund and dispute events append audit entries and disputes
+notify BU admins. Direct-charge refunds debit the connected account. If application fees are later
+enabled, Qinio explicitly refunds its fee along with the charge.
+
+### Stripe sandbox testing
+
+Keep `PAYMENT_PROVIDER=mock` for deterministic CI. For a real sandbox pass:
+
+1. Run `stripe login`, then forward Connect events with
+   `stripe listen --forward-connect-to localhost:4000/api/webhooks/stripe`.
+2. Put the emitted signing secret in `STRIPE_WEBHOOK_SECRET`, set
+   `PAYMENT_PROVIDER=stripe`, and restart the API.
+3. Connect a Standard **test** account from a BU Payments page using Stripe's test onboarding data.
+4. Create a Qinio package, activate it, and verify its Product and Price appear in that connected
+   account's test Dashboard.
+5. Purchase with `4242 4242 4242 4242`, any future expiry, and any CVC. Confirm the order advances
+   only after the webhook and creates the snapshot's exact kit count.
+6. Test decline `4000 0000 0000 0002`, 3DS `4000 0025 0000 3155`, cancel/retry, Checkout
+   expiration, partial/full refund, duplicate webhook delivery, and a test dispute.
+7. Repeat with a second BU and verify products, payments, events, and orders never cross connected
+   accounts or tenants.
 
 ## Architecture
 
@@ -177,16 +279,16 @@ patient cannot read their own results while they are still with the doctor.
 
 ## Commands
 
-| Command             | What it does                                        |
-| ------------------- | --------------------------------------------------- |
-| `pnpm dev`          | Database, migrations, seed, API and web             |
-| `pnpm test`         | Integration tests against a live database           |
-| `pnpm typecheck`    | Typecheck every package                             |
-| `pnpm lint`         | ESLint                                              |
-| `pnpm db:generate`  | Generate SQL migrations from the Drizzle schema     |
-| `pnpm db:migrate`   | Apply migrations                                    |
-| `pnpm db:seed`      | Seed demo data (idempotent)                         |
-| `pnpm db:reset`     | Drop the volume and rebuild from scratch            |
+| Command            | What it does                                    |
+| ------------------ | ----------------------------------------------- |
+| `pnpm dev`         | Database, migrations, seed, API and web         |
+| `pnpm test`        | Integration tests against a live database       |
+| `pnpm typecheck`   | Typecheck every package                         |
+| `pnpm lint`        | ESLint                                          |
+| `pnpm db:generate` | Generate SQL migrations from the Drizzle schema |
+| `pnpm db:migrate`  | Apply migrations                                |
+| `pnpm db:seed`     | Seed demo data (idempotent)                     |
+| `pnpm db:reset`    | Drop the volume and rebuild from scratch        |
 
 `pnpm db:seed` refuses to run when `NODE_ENV=production`; it creates demo tenants and fake patient
 accounts. Deployments use `db:bootstrap`, which creates only the platform admin.
@@ -258,12 +360,12 @@ az login
 ADMIN_CIDR=203.0.113.42/32 ./deploy/azure-provision.sh
 ```
 
-| Resource | Default | Override with |
-| --- | --- | --- |
-| VM | `Standard_B2s`, Ubuntu 24.04, 64 GiB | `VM_SIZE`, `OS_DISK_GB` |
+| Resource | Default                                                | Override with                           |
+| -------- | ------------------------------------------------------ | --------------------------------------- |
+| VM       | `Standard_B2s`, Ubuntu 24.04, 64 GiB                   | `VM_SIZE`, `OS_DISK_GB`                 |
 | Database | Flexible Server Burstable `Standard_B1ms`, 32 GiB, v17 | `PG_SKU`, `PG_STORAGE_GB`, `PG_VERSION` |
-| Location | `eastus` | `LOCATION` |
-| Names | prefixed `nio-` | `PREFIX` |
+| Location | `eastus`                                               | `LOCATION`                              |
+| Names    | prefixed `nio-`                                        | `PREFIX`                                |
 
 #### When a region refuses to cooperate
 
@@ -476,7 +578,7 @@ for separately. Three constraints shape the choice:
 
 - Azure blocks outbound port **25** from VMs entirely, so the relay must accept **587**.
 - The connection carries a password and patient-identifying subject lines, so TLS is mandatory.
-  `requireTLS` is set for any non-local host, which means the send *fails* rather than silently
+  `requireTLS` is set for any non-local host, which means the send _fails_ rather than silently
   falling back to plaintext.
 - `SMTP_FROM` must be an address the relay has verified, or it will reject every message.
 
@@ -542,13 +644,13 @@ before you rely on it.
 This is a private test deployment, not a HIPAA-ready one. Azure signing a BAA covers the
 infrastructure; it says nothing about how this application is configured. Before real patient data:
 replace dev auth with Auth0, encrypt PHI at rest with a customer-managed key, add audit log
-retention and offsite backups, confirm no PHI reaches application logs, sanitize the marketing page
-HTML, and put a real payment provider behind `PaymentProvider`.
+retention and offsite backups, confirm no PHI reaches application logs, and sanitize the marketing
+page HTML.
 
 ## Not in this pass
 
-- Real payments. `PaymentProvider` has a mock implementation that captures instantly; Stripe drops
-  in without touching order logic.
+- Live payments. Stripe Connect is implemented for test mode, but live mode remains gated on
+  underwriting, bank/payout setup, merchant agreements, and operational monitoring.
 - AI interpretation. `draftInterpretation()` returns a clearly-labelled stub the doctor reviews;
   the draft is stored separately from the clinician's own words.
 - SMS notifications, retest scheduling and affiliate programs.

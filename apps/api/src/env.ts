@@ -46,9 +46,26 @@ const envSchema = z.object({
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
 
-  PAYMENT_PROVIDER: z.enum(['mock']).default('mock'),
+  PAYMENT_PROVIDER: z.enum(['mock', 'stripe']).default('mock'),
+  STRIPE_SECRET_KEY: z.string().optional(),
+  STRIPE_CONNECT_CLIENT_ID: z.string().optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().optional(),
+  STRIPE_CURRENCY: z.string().length(3).default('usd'),
+  STRIPE_PLATFORM_FEE_BPS: z.coerce.number().int().min(0).max(10_000).default(0),
+  STRIPE_LIVE_MODE: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
   /** Shared secret for the temporary provider-neutral server-to-server purchase adapter. */
   INTEGRATION_API_SECRET: z.string().min(32).optional(),
+  /**
+   * Enables the "Mock flow" that seeds synthetic orders at every queue stage. Local and the dev
+   * deployment only; never set on an environment that holds real patients.
+   */
+  SIMULATION_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -120,6 +137,23 @@ function assertDeployableConfig(): void {
       'SMTP_HOST is still the placeholder. Point it at a real relay, or set SMTP_HOST=mailpit and run ' +
         'with --profile mailpit to capture mail instead of sending it.',
     );
+  }
+  if (env.PAYMENT_PROVIDER === 'stripe') {
+    for (const key of [
+      'STRIPE_SECRET_KEY',
+      'STRIPE_CONNECT_CLIENT_ID',
+      'STRIPE_WEBHOOK_SECRET',
+    ] as const) {
+      if (!env[key]) problems.push(`PAYMENT_PROVIDER=stripe requires ${key}.`);
+    }
+    if (env.STRIPE_SECRET_KEY) {
+      const keyIsLive = env.STRIPE_SECRET_KEY.startsWith('sk_live_');
+      const keyIsTest = env.STRIPE_SECRET_KEY.startsWith('sk_test_');
+      if (!keyIsLive && !keyIsTest) problems.push('STRIPE_SECRET_KEY has an unrecognized mode.');
+      if (env.STRIPE_LIVE_MODE !== keyIsLive) {
+        problems.push('STRIPE_LIVE_MODE does not match STRIPE_SECRET_KEY.');
+      }
+    }
   }
 
   if (problems.length > 0) {

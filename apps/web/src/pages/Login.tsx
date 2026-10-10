@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Navigate, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../lib/auth';
+import { safeReturnTo } from '../lib/returnTo';
 import { api } from '../lib/api';
 import { Alert, Field } from '../components/ui';
 
@@ -36,8 +37,10 @@ export function Login() {
     enabled: Boolean(orgSlug) && provider === 'auth0',
   });
 
+  const returnTo = safeReturnTo(searchParams.get('returnTo'));
+
   if (loading) return <div className="centered">Loading…</div>;
-  if (me) return <Navigate to="/portal" replace />;
+  if (me) return <Navigate to={returnTo} replace />;
 
   async function run(action: () => Promise<void>) {
     setBusy(true);
@@ -89,7 +92,7 @@ export function Login() {
                 void run(() =>
                   signInWithAuth0({
                     organization: handoff.data?.organization ?? undefined,
-                    returnTo: searchParams.get('returnTo') ?? '/portal',
+                    returnTo,
                   }),
                 )
               }

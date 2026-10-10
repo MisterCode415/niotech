@@ -6,6 +6,11 @@ export function StatusBadge({ status, kind = 'order' }: { status: string; kind?:
   return <span className={`badge ${statusTone(status)}`}>{label}</span>;
 }
 
+/** Marks orders seeded by the mock flow so nobody mistakes them for real patients. */
+export function MockBadge({ show }: { show?: boolean }) {
+  return show ? <span className="badge mock">Mock</span> : null;
+}
+
 export function Empty({ children }: { children: ReactNode }) {
   return <div className="empty">{children}</div>;
 }

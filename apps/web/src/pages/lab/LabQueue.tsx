@@ -1,18 +1,20 @@
-import { Link } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api';
-import { useAuth } from '../../lib/auth';
-import { Loading, Empty, StatusBadge, Stat, Alert } from '../../components/ui';
+import { MockBadge, Loading, Empty, StatusBadge, Stat, Alert } from '../../components/ui';
 import { useState } from 'react';
+import { KitSerialEntry } from '../../components/KitSerialEntry';
 
 interface QueueRow {
   kitId: string;
   kitNumber: number;
+  serial: string;
   kitStatus: string;
   testTypeName: string;
   sampleType: string;
   orderId: string;
   orderNumber: string;
+  isMock?: boolean;
   packageName: string;
   patientName: string;
   requiresClinician: boolean;
@@ -35,6 +37,7 @@ function KitTable({
   onAction?: (path: string) => void;
   busy?: boolean;
 }) {
+  const { slug } = useParams();
   if (rows.length === 0) return <Empty>Nothing here.</Empty>;
 
   return (
@@ -53,8 +56,13 @@ function KitTable({
         <tbody>
           {rows.map((row) => (
             <tr key={row.kitId}>
-              <td className="mono">{row.orderNumber}</td>
-              <td>#{row.kitNumber}</td>
+              <td className="mono">
+                {row.orderNumber} <MockBadge show={row.isMock} />
+              </td>
+              <td>
+                #{row.kitNumber}
+                <div className="small muted mono">{row.serial}</div>
+              </td>
               <td>
                 {row.testTypeName}
                 <div className="small muted">{row.sampleType}</div>
@@ -74,7 +82,10 @@ function KitTable({
                       {action.label}
                     </button>
                   ) : null}
-                  <Link className="btn small" to={`/portal/lab/orders/${row.orderId}`}>
+                  <Link
+                    className="btn small"
+                    to={`/w/${slug}/lab/orders/${row.orderId}?kit=${row.kitId}`}
+                  >
                     Open
                   </Link>
                 </div>
@@ -88,10 +99,9 @@ function KitTable({
 }
 
 export function LabQueue() {
-  const { me } = useAuth();
   const queryClient = useQueryClient();
   const [error, setError] = useState('');
-  const slug = me?.memberships.find((m) => m.role === 'lab')?.businessUnitSlug;
+  const { slug } = useParams();
 
   const { data, isLoading } = useQuery({
     queryKey: ['lab', slug, 'queue'],
@@ -125,6 +135,15 @@ export function LabQueue() {
         </div>
       </div>
 
+      <div className="card" style={{ marginBottom: 18 }}>
+        <div className="card-title">Receive a kit by serial</div>
+        <p className="small muted" style={{ marginTop: 0 }}>
+          For a QR code that will not scan. Entering the serial checks the kit in, exactly as a scan
+          would, or opens it for results if it is already here.
+        </p>
+        <KitSerialEntry buttonLabel="Receive" />
+      </div>
+
       <Alert tone="error">{error}</Alert>
 
       <div className="grid cols-3" style={{ marginBottom: 20 }}>
@@ -136,7 +155,10 @@ export function LabQueue() {
       <h2>Ready to check in</h2>
       <KitTable
         rows={awaitingCheckIn}
-        action={{ label: 'Check in', path: (kitId) => `/api/bu/${slug}/lab/kits/${kitId}/check-in` }}
+        action={{
+          label: 'Check in',
+          path: (kitId) => `/api/bu/${slug}/lab/kits/${kitId}/check-in`,
+        }}
         onAction={(path) => act.mutate(path)}
         busy={act.isPending}
       />

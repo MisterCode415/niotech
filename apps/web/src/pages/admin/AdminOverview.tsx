@@ -1,12 +1,24 @@
+import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { ROLE_LABELS, type MembershipRole } from '@nio/shared';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  ROLE_LABELS,
+  ORDER_STATUS_LABELS,
+  workspacePath,
+  type MembershipRole,
+  type OrderStatus,
+} from '@nio/shared';
 import { api } from '../../lib/api';
-import { Loading, Stat } from '../../components/ui';
+import { useAuthConfig } from '../../lib/authConfig';
+import { Alert, Loading, Stat } from '../../components/ui';
 
 interface Summary {
   orders: { totalOrders: number; awaitingReview: number; released: number };
   roster: Array<{ role: MembershipRole; count: number }>;
+}
+
+interface SeedResult {
+  orders: Array<{ orderNumber: string; status: OrderStatus; queue: string; patient: string }>;
 }
 
 export function AdminOverview() {
@@ -49,7 +61,11 @@ export function AdminOverview() {
               </div>
             ))
           )}
-          <Link className="btn small" to={`/portal/admin/${slug}/team`} style={{ marginTop: 10 }}>
+          <Link
+            className="btn small"
+            to={workspacePath(slug, 'bu_admin', '/team')}
+            style={{ marginTop: 10 }}
+          >
             Manage team
           </Link>
         </div>
@@ -64,6 +80,113 @@ export function AdminOverview() {
           </ol>
         </div>
       </div>
+
+      <MockFlowCard slug={slug} />
     </>
+  );
+}
+
+function MockFlowCard({ slug }: { slug: string }) {
+  const { simulationEnabled } = useAuthConfig();
+  const queryClient = useQueryClient();
+  const [seeded, setSeeded] = useState<SeedResult | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const seed = useMutation({
+    mutationFn: () => api<SeedResult>(`/api/bu/${slug}/simulation/seed`, { method: 'POST' }),
+    onSuccess: (result) => {
+      setSeeded(result);
+      setMessage(null);
+      setError(null);
+      void queryClient.invalidateQueries();
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const clear = useMutation({
+    mutationFn: () =>
+      api<{ removedOrders: number }>(`/api/bu/${slug}/simulation`, { method: 'DELETE' }),
+    onSuccess: (result) => {
+      setSeeded(null);
+      setMessage(
+        `Removed ${result.removedOrders} mock order${result.removedOrders === 1 ? '' : 's'}.`,
+      );
+      setError(null);
+      void queryClient.invalidateQueries();
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  if (!simulationEnabled) return null;
+
+  const busy = seed.isPending || clear.isPending;
+
+  return (
+    <div className="card" style={{ marginTop: 22 }}>
+      <div className="spread">
+        <div className="card-title" style={{ margin: 0 }}>
+          Mock flow <span className="badge mock">Test only</span>
+        </div>
+        <div className="row" style={{ gap: 8 }}>
+          <button
+            className="btn small primary"
+            disabled={busy}
+            onClick={() => {
+              if (window.confirm('Seed one mock order into every queue of this business unit?'))
+                seed.mutate();
+            }}
+          >
+            {seed.isPending ? 'Seeding…' : 'Mock flow'}
+          </button>
+          <button
+            className="btn small"
+            disabled={busy}
+            onClick={() => {
+              if (
+                window.confirm(
+                  'Delete every mock order, mock patient and mock package in this business unit?',
+                )
+              )
+                clear.mutate();
+            }}
+          >
+            {clear.isPending ? 'Clearing…' : 'Clear mock data'}
+          </button>
+        </div>
+      </div>
+      <p className="small muted" style={{ marginTop: 8 }}>
+        Seeds one order at each stage, from fulfillment through lab and doctor review to released
+        results, using draft mock packages and mock patients. Nothing is charged or emailed. Use the
+        workspace switcher to work each queue as its role; mock orders carry a{' '}
+        <span className="badge mock">Mock</span> badge.
+      </p>
+      {error && <Alert tone="error">{error}</Alert>}
+      {message && <Alert tone="success">{message}</Alert>}
+      {seeded && (
+        <div className="table-wrap" style={{ marginTop: 10 }}>
+          <table>
+            <thead>
+              <tr>
+                <th>Order</th>
+                <th>Queue</th>
+                <th>Status</th>
+                <th>Patient</th>
+              </tr>
+            </thead>
+            <tbody>
+              {seeded.orders.map((order) => (
+                <tr key={order.orderNumber}>
+                  <td className="mono">{order.orderNumber}</td>
+                  <td>{order.queue}</td>
+                  <td>{ORDER_STATUS_LABELS[order.status]}</td>
+                  <td>{order.patient}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }

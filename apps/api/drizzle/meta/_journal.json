@@ -43,6 +43,41 @@
       "when": 1788796800000,
       "tag": "0005_storefront_commerce",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1789405200000,
+      "tag": "0006_stripe_connect_commerce",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1789407000000,
+      "tag": "0007_stripe_checkout_attempt",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1789408800000,
+      "tag": "0008_order_event_sequence",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1789410600000,
+      "tag": "0009_simulation",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1789412400000,
+      "tag": "0010_kit_serial",
+      "breakpoints": true
     }
   ]
 }

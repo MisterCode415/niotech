@@ -9,8 +9,10 @@ import {
 } from 'react';
 import { useAuth0 } from '@auth0/auth0-react';
 import type { MembershipRole, BusinessUnitStatus } from '@nio/shared';
-import { api, getToken, setToken, setTokenResolver } from './api';
+import { api, getToken, setActAsResolver, setToken, setTokenResolver } from './api';
 import { useAuthConfig } from './authConfig';
+import { actAsHeaderFor } from './workspace';
+import { safeReturnTo } from './returnTo';
 
 export interface Membership {
   businessUnitId: string;
@@ -21,16 +23,28 @@ export interface Membership {
   role: MembershipRole;
 }
 
+export interface AccessIssue {
+  code:
+    | 'no_account'
+    | 'account_inactive'
+    | 'membership_suspended'
+    | 'business_unit_inactive'
+    | 'organization_required';
+  message: string;
+}
+
 export interface Me {
   email: string;
   name: string;
   userId: string | null;
   isPlatformAdmin: boolean;
+  provider: 'dev' | 'auth0';
   activeOrganizationId: string | null;
   /** Memberships usable by the token currently in memory. */
   memberships: Membership[];
   /** Every workspace this identity may switch into. */
   availableMemberships: Membership[];
+  accessIssues: AccessIssue[];
 }
 
 export interface SignInOptions {
@@ -43,6 +57,8 @@ export interface SignInOptions {
 interface AuthState {
   me: Me | null;
   loading: boolean;
+  /** Set when the identity provider signed someone in but the API refused the session. */
+  authError: string | null;
   provider: 'dev' | 'auth0';
   /** Dev provider only; unavailable once a real tenant is configured. */
   signInAsDev: (email: string) => Promise<void>;
@@ -54,11 +70,11 @@ interface AuthState {
 
 const AuthContext = createContext<AuthState | null>(null);
 
-async function fetchMe(): Promise<Me | null> {
+async function fetchMe(): Promise<{ me: Me | null; error: string | null }> {
   try {
-    return await api<Me>('/api/auth/me');
-  } catch {
-    return null;
+    return { me: await api<Me>('/api/auth/me'), error: null };
+  } catch (err) {
+    return { me: null, error: err instanceof Error ? err.message : 'Sign in failed' };
   }
 }
 
@@ -72,7 +88,7 @@ function DevAuth({ children }: { children: ReactNode }) {
       setLoading(false);
       return;
     }
-    const profile = await fetchMe();
+    const { me: profile } = await fetchMe();
     // A stale or rejected token should not leave the app in a half-signed-in state.
     if (!profile) setToken(null);
     setMe(profile);
@@ -88,6 +104,7 @@ function DevAuth({ children }: { children: ReactNode }) {
     () => ({
       me,
       loading,
+      authError: null,
       provider: 'dev',
       async signInAsDev(email: string) {
         const { accessToken } = await api<{ accessToken: string }>('/api/auth/dev/login', {
@@ -122,6 +139,7 @@ function Auth0Auth({ children }: { children: ReactNode }) {
     user,
   } = useAuth0();
   const [me, setMe] = useState<Me | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const activeOrganizationId =
     typeof user?.org_id === 'string' ? (user.org_id as string) : undefined;
@@ -147,10 +165,13 @@ function Auth0Auth({ children }: { children: ReactNode }) {
   const refresh = useCallback(async () => {
     if (!isAuthenticated) {
       setMe(null);
+      setAuthError(null);
       setLoading(false);
       return;
     }
-    setMe(await fetchMe());
+    const result = await fetchMe();
+    setMe(result.me);
+    setAuthError(result.error);
     setLoading(false);
   }, [isAuthenticated, activeOrganizationId]);
 
@@ -163,13 +184,14 @@ function Auth0Auth({ children }: { children: ReactNode }) {
     () => ({
       me,
       loading: isLoading || loading,
+      authError,
       provider: 'auth0',
       async signInAsDev() {
         throw new Error('Password-less dev sign in is disabled when Auth0 is configured');
       },
       async signInWithAuth0(options?: SignInOptions) {
         await loginWithRedirect({
-          appState: { returnTo: options?.returnTo ?? '/portal' },
+          appState: { returnTo: safeReturnTo(options?.returnTo) },
           authorizationParams: options?.organization
             ? { organization: options.organization }
             : undefined,
@@ -181,7 +203,7 @@ function Auth0Auth({ children }: { children: ReactNode }) {
       },
       refresh,
     }),
-    [me, loading, isLoading, loginWithRedirect, auth0Logout, refresh],
+    [me, authError, loading, isLoading, loginWithRedirect, auth0Logout, refresh],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
@@ -202,8 +224,13 @@ export function useAuth(): AuthState {
   return context;
 }
 
-/** The membership that satisfies a given role, used to pick which portal a user can open. */
-export function useMembership(role: MembershipRole): Membership | null {
+/**
+ * Keeps the API client's act-as resolver pointed at the current profile. Render it before the
+ * routes: it assigns during render, not in an effect, because child queries can fire before a
+ * parent's effects run.
+ */
+export function ActAsSync() {
   const { me } = useAuth();
-  return me?.memberships.find((m) => m.role === role) ?? null;
+  setActAsResolver((path) => actAsHeaderFor(me, path));
+  return null;
 }

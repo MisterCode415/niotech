@@ -1,13 +1,13 @@
-import { Link } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api';
 import { date } from '../../lib/format';
-import { useAuth } from '../../lib/auth';
-import { Loading, Empty, StatusBadge, Stat } from '../../components/ui';
+import { MockBadge, Loading, Empty, StatusBadge, Stat } from '../../components/ui';
 
 interface OrderRow {
   id: string;
   orderNumber: string;
+  isMock?: boolean;
   status: string;
   shippingMethod: string;
   externalFulfillmentId: string | null;
@@ -19,8 +19,7 @@ interface OrderRow {
 }
 
 export function FulfillmentQueue() {
-  const { me } = useAuth();
-  const slug = me?.memberships.find((m) => m.role === 'fulfillment')?.businessUnitSlug;
+  const { slug } = useParams();
 
   const { data, isLoading } = useQuery({
     queryKey: ['fulfillment', slug, 'orders'],
@@ -71,7 +70,7 @@ export function FulfillmentQueue() {
             <tbody>
               {orders.map((order) => (
                 <tr key={order.id}>
-                  <td className="mono">{order.orderNumber}</td>
+                  <td className="mono">{order.orderNumber} <MockBadge show={order.isMock} /></td>
                   <td className="mono muted">{order.externalFulfillmentId ?? '—'}</td>
                   <td>{order.recipientName}</td>
                   <td>{order.kitCount}</td>
@@ -87,7 +86,7 @@ export function FulfillmentQueue() {
                     ) : null}
                   </td>
                   <td>
-                    <Link className="btn small" to={`/portal/fulfillment/orders/${order.id}`}>
+                    <Link className="btn small" to={`/w/${slug}/fulfillment/orders/${order.id}`}>
                       Open
                     </Link>
                   </td>

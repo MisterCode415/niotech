@@ -1,11 +1,16 @@
 import { and, eq } from 'drizzle-orm';
-import type { ActorRole, OrderPackageSnapshot, ShippingMethod } from '@nio/shared';
+import {
+  workspacePath,
+  type ActorRole,
+  type OrderPackageSnapshot,
+  type ShippingMethod,
+} from '@nio/shared';
 import type { Tx } from '../db/client.js';
 import { kits, memberships, orders, users } from '../db/schema.js';
 import { badRequest } from '../lib/errors.js';
-import { generateQrToken } from '../lib/ids.js';
+import { generateKitSerial, generateQrToken } from '../lib/ids.js';
 import type { NotificationIntent } from './notifications.js';
-import { transitionOrder } from './orderWorkflow.js';
+import { businessUnitSlug, transitionOrder } from './orderWorkflow.js';
 
 interface PaidOrder {
   id: string;
@@ -66,6 +71,7 @@ export async function dispatchPaidOrder(
         testTypeId: entry.testTypeId,
         kitNumber,
         qrToken: generateQrToken(),
+        serial: generateKitSerial(),
         status: 'awaiting_fulfillment' as const,
       };
     }),
@@ -90,6 +96,7 @@ export async function dispatchPaidOrder(
     .innerJoin(users, eq(users.id, memberships.userId))
     .where(and(eq(memberships.role, 'fulfillment'), eq(memberships.status, 'active')));
 
+  const slug = await businessUnitSlug(tx, input.businessUnitId);
   return fulfillmentTeam.map((member) => ({
     businessUnitId: input.businessUnitId,
     userId: member.userId,
@@ -97,7 +104,7 @@ export async function dispatchPaidOrder(
     type: 'order_dispatched',
     title: `New order to ship: ${input.order.orderNumber}`,
     body: `Order ${input.order.orderNumber} is paid and ready to ship (${kitValues.length} kit(s), ${input.order.shippingMethod}).`,
-    linkPath: `/portal/fulfillment/orders/${input.order.id}`,
+    linkPath: workspacePath(slug, 'fulfillment', `/orders/${input.order.id}`),
     orderId: input.order.id,
   }));
 }

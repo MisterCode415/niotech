@@ -1,4 +1,5 @@
 import { Link, useParams } from 'react-router-dom';
+import { workspacePath } from '@nio/shared';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { money } from '../lib/format';
@@ -51,8 +52,11 @@ export function Storefront() {
       <div className="hero">
         <div className="spread" style={{ marginBottom: 18, justifyContent: 'flex-end' }}>
           {me ? (
-            <Link to="/portal" className="btn small">
-              My portal
+            <Link
+              to={isPatientHere ? workspacePath(slug, 'patient') : '/portal'}
+              className="btn small"
+            >
+              {isPatientHere ? 'My orders' : 'My portal'}
             </Link>
           ) : (
             <Link to={`/login?org=${slug}`} className="btn small">

@@ -5,8 +5,17 @@ import { buildApp } from '../app.js';
 import { closeDb, withPlatformScope, withTenant } from '../db/client.js';
 import { requireOrganizationScope, type Actor, type ActorMembership } from '../auth/context.js';
 import { devAuthProvider } from '../auth/index.js';
-import { businessUnits, orders, users } from '../db/schema.js';
+import {
+  businessUnits,
+  kits,
+  orders,
+  paymentAccounts,
+  paymentEvents,
+  payments,
+  users,
+} from '../db/schema.js';
 import { call, login, auth, multipartBody, SAMPLE_PDF, TEST_ADDRESS } from './harness.js';
+import { stripeClient } from '../services/stripe.js';
 
 interface PackageSummary {
   id: string;
@@ -287,7 +296,7 @@ describe('order workflow: direct-to-patient branch', () => {
 describe('tenant isolation', () => {
   it('hides another business unit orders, kits and portals', async () => {
     const pkg = await findPackage(false);
-    const { order } = await call<{ order: { id: string } }>(app, {
+    const { order } = await call<{ order: { id: string; priceCents: number } }>(app, {
       method: 'POST',
       url: '/api/bu/vitality/patient/orders',
       token: tokens.patient!,
@@ -340,15 +349,16 @@ describe('tenant isolation', () => {
       url: `/api/scan/${kit.qrToken}`,
       headers: auth(tokens.otherPatient!),
     });
-    expect(foreignScan.statusCode).toBe(403);
+    // Indistinguishable from an unknown code, so a typed serial cannot probe other tenants.
+    expect(foreignScan.statusCode).toBe(404);
 
-    const labScan = await call<{ role: string; actions: Array<{ id: string }> }>(app, {
+    const labScan = await call<{ role: string; orderPath: string }>(app, {
       method: 'GET',
       url: `/api/scan/${kit.qrToken}`,
       token: tokens.lab!,
     });
     expect(labScan.role).toBe('lab');
-    expect(labScan.actions.map((a) => a.id)).toContain('start_processing');
+    expect(labScan.orderPath).toContain(`?kit=${kit.id}`);
 
     void orderId;
   });
@@ -423,13 +433,10 @@ describe('identity and database authorization boundaries', () => {
     });
 
     const countVisibleOrders = (userId: string, actorRole: 'patient' | 'doctor') =>
-      withTenant(
-        { businessUnitId: identity.businessUnitId, userId, actorRole },
-        async (tx) => {
-          const [result] = await tx.select({ count: sql<number>`count(*)::int` }).from(orders);
-          return result!.count;
-        },
-      );
+      withTenant({ businessUnitId: identity.businessUnitId, userId, actorRole }, async (tx) => {
+        const [result] = await tx.select({ count: sql<number>`count(*)::int` }).from(orders);
+        return result!.count;
+      });
 
     expect(await countVisibleOrders(identity.ownerId, 'patient')).toBeGreaterThan(0);
     expect(await countVisibleOrders(identity.foreignPatientId, 'patient')).toBe(0);
@@ -647,6 +654,145 @@ describe('storefront commerce readiness', () => {
     }
     expect(statuses.slice(0, 5)).toEqual([202, 202, 202, 202, 202]);
     expect(statuses[5]).toBe(429);
+  });
+});
+
+describe('Stripe webhook boundary', () => {
+  it('verifies a connected-account event and dispatches fulfillment exactly once', async () => {
+    const pkg = await findPackage(false);
+    const { order } = await call<{ order: { id: string; priceCents: number } }>(app, {
+      method: 'POST',
+      url: '/api/bu/vitality/patient/orders',
+      token: tokens.patient!,
+      payload: {
+        packageId: pkg.id,
+        shippingAddress: TEST_ADDRESS,
+        shippingMethod: 'ground',
+      },
+      expect: 201,
+    });
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const sessionId = `cs_test_${suffix}`;
+    const accountId = 'acct_test_qinio_vitality';
+    const eventId = `evt_test_${suffix}`;
+
+    await withPlatformScope(async (tx) => {
+      const [businessUnit] = await tx
+        .select({ id: businessUnits.id })
+        .from(businessUnits)
+        .where(eq(businessUnits.slug, 'vitality'))
+        .limit(1);
+      await tx
+        .insert(paymentAccounts)
+        .values({
+          businessUnitId: businessUnit!.id,
+          provider: 'stripe',
+          providerAccountId: accountId,
+          status: 'active',
+          chargesEnabled: true,
+          payoutsEnabled: true,
+          detailsSubmitted: true,
+        })
+        .onConflictDoUpdate({
+          target: [paymentAccounts.businessUnitId, paymentAccounts.provider],
+          set: {
+            providerAccountId: accountId,
+            status: 'active',
+            chargesEnabled: true,
+            payoutsEnabled: true,
+          },
+        });
+      await tx.insert(payments).values({
+        businessUnitId: businessUnit!.id,
+        orderId: order.id,
+        provider: 'stripe',
+        providerAccountId: accountId,
+        checkoutSessionId: sessionId,
+        status: 'pending',
+        amountCents: order.priceCents,
+        currency: 'usd',
+      });
+      await tx
+        .update(orders)
+        .set({ paymentStatus: 'pending', paymentReference: sessionId })
+        .where(eq(orders.id, order.id));
+    });
+
+    const payload = JSON.stringify({
+      id: eventId,
+      object: 'event',
+      account: accountId,
+      api_version: '2025-12-15.clover',
+      created: Math.floor(Date.now() / 1000),
+      data: {
+        object: {
+          id: sessionId,
+          object: 'checkout.session',
+          payment_intent: `pi_test_${suffix}`,
+          payment_status: 'paid',
+          status: 'complete',
+          amount_total: order.priceCents,
+          currency: 'usd',
+        },
+      },
+      livemode: false,
+      pending_webhooks: 1,
+      request: null,
+      type: 'checkout.session.completed',
+    });
+    const signature = stripeClient().webhooks.generateTestHeaderString({
+      payload,
+      secret: 'whsec_qinio_unit_tests_only',
+    });
+
+    for (let delivery = 0; delivery < 2; delivery += 1) {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/webhooks/stripe',
+        headers: {
+          'content-type': 'application/json',
+          'stripe-signature': signature,
+        },
+        payload,
+      });
+      expect(response.statusCode).toBe(200);
+    }
+
+    const result = await withPlatformScope(async (tx) => {
+      const [eventCount] = await tx
+        .select({ count: sql<number>`count(*)::int` })
+        .from(paymentEvents)
+        .where(eq(paymentEvents.providerEventId, eventId));
+      const [kitCount] = await tx
+        .select({ count: sql<number>`count(*)::int` })
+        .from(kits)
+        .where(eq(kits.orderId, order.id));
+      const [savedOrder] = await tx
+        .select({ status: orders.status, paymentStatus: orders.paymentStatus })
+        .from(orders)
+        .where(eq(orders.id, order.id))
+        .limit(1);
+      return { eventCount: eventCount!.count, kitCount: kitCount!.count, savedOrder };
+    });
+    expect(result.eventCount).toBe(1);
+    expect(result.kitCount).toBe(pkg.kitCount);
+    expect(result.savedOrder).toMatchObject({
+      status: 'dispatched_to_fulfillment',
+      paymentStatus: 'paid',
+    });
+  });
+
+  it('rejects an invalid webhook signature', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/stripe',
+      headers: {
+        'content-type': 'application/json',
+        'stripe-signature': 'invalid',
+      },
+      payload: '{}',
+    });
+    expect(response.statusCode).toBe(400);
   });
 });
 

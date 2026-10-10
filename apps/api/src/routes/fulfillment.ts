@@ -7,6 +7,7 @@ import {
   fulfillmentAccountSchema,
   shipOrderSchema,
   ORDER_ISSUE_REASON_LABELS,
+  workspacePath,
 } from '@nio/shared';
 import { requireMembership } from '../auth/context.js';
 import { env } from '../env.js';
@@ -42,6 +43,7 @@ export async function fulfillmentRoutes(app: FastifyInstance) {
         .select({
           id: orders.id,
           orderNumber: orders.orderNumber,
+          isMock: orders.isMock,
           status: orders.status,
           shippingMethod: orders.shippingMethod,
           shippingAddress: orders.shippingAddress,
@@ -235,7 +237,7 @@ export async function fulfillmentRoutes(app: FastifyInstance) {
           type: 'kit_shipped',
           title: `Your kit for ${detail.order.orderNumber} has shipped`,
           body: `Tracking ${input.trackingNumber} with ${input.carrier}. Scan the QR code on the kit when it arrives.`,
-          linkPath: `/portal/orders/${orderId}`,
+          linkPath: workspacePath(ctx.businessUnitSlug, 'patient', `/orders/${orderId}`),
           orderId,
         },
       ];

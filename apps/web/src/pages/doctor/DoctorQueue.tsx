@@ -1,13 +1,13 @@
-import { Link } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api';
 import { date } from '../../lib/format';
-import { useAuth } from '../../lib/auth';
-import { Loading, Empty, Stat } from '../../components/ui';
+import { MockBadge, Loading, Empty, Stat } from '../../components/ui';
 
 interface Pending {
   orderId: string;
   orderNumber: string;
+  isMock?: boolean;
   patientName: string;
   packageName: string;
   focusArea: string | null;
@@ -17,14 +17,14 @@ interface Pending {
 interface Decided {
   orderId: string;
   orderNumber: string;
+  isMock?: boolean;
   patientName: string;
   decision: string | null;
   decidedAt: string | null;
 }
 
 export function DoctorQueue() {
-  const { me } = useAuth();
-  const slug = me?.memberships.find((m) => m.role === 'doctor')?.businessUnitSlug;
+  const { slug } = useParams();
 
   const { data, isLoading } = useQuery({
     queryKey: ['doctor', slug, 'queue'],
@@ -73,13 +73,13 @@ export function DoctorQueue() {
             <tbody>
               {data.pending.map((row) => (
                 <tr key={row.orderId}>
-                  <td className="mono">{row.orderNumber}</td>
+                  <td className="mono">{row.orderNumber} <MockBadge show={row.isMock} /></td>
                   <td>{row.patientName}</td>
                   <td>{row.packageName}</td>
                   <td className="muted">{row.focusArea ?? '—'}</td>
                   <td className="muted">{date(row.queuedAt)}</td>
                   <td>
-                    <Link className="btn primary small" to={`/portal/doctor/reviews/${row.orderId}`}>
+                    <Link className="btn primary small" to={`/w/${slug}/doctor/reviews/${row.orderId}`}>
                       Review
                     </Link>
                   </td>
@@ -107,7 +107,7 @@ export function DoctorQueue() {
             <tbody>
               {data.decided.map((row) => (
                 <tr key={row.orderId}>
-                  <td className="mono">{row.orderNumber}</td>
+                  <td className="mono">{row.orderNumber} <MockBadge show={row.isMock} /></td>
                   <td>{row.patientName}</td>
                   <td>
                     <span className={`badge ${row.decision === 'approved' ? 'success' : 'danger'}`}>

@@ -1,16 +1,18 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import {
   assertTransition,
   canTransition,
   rollupOrderStatus,
   orderStatusRank,
   ORDER_STATUS_LABELS,
+  workspacePath,
   type ActorRole,
   type OrderStatus,
   type KitStatus,
 } from '@nio/shared';
 import type { Tx } from '../db/client.js';
 import {
+  businessUnits,
   clinicianReviews,
   kits,
   labResults,
@@ -29,6 +31,16 @@ export interface WorkflowActor {
   businessUnitId: string;
   actorRole: ActorRole;
   actorUserId: string | null;
+}
+
+export async function businessUnitSlug(tx: Tx, businessUnitId: string): Promise<string> {
+  const [row] = await tx
+    .select({ slug: businessUnits.slug })
+    .from(businessUnits)
+    .where(eq(businessUnits.id, businessUnitId))
+    .limit(1);
+  if (!row) throw notFound('Business unit not found');
+  return row.slug;
 }
 
 export async function loadOrder(tx: Tx, businessUnitId: string, orderId: string) {
@@ -55,6 +67,12 @@ export async function recordEvent(
     metadata?: Record<string, unknown>;
   },
 ): Promise<void> {
+  const [acting] = await tx.execute<{ email: string | null }>(
+    sql`select nullif(current_setting('app.acting_platform_admin', true), '') as email`,
+  );
+  const metadata = acting?.email
+    ? { ...params.metadata, actingAsPlatformAdmin: { email: acting.email } }
+    : params.metadata;
   await tx.insert(orderEvents).values({
     businessUnitId: params.businessUnitId,
     orderId: params.orderId,
@@ -64,7 +82,7 @@ export async function recordEvent(
     fromStatus: params.fromStatus ?? null,
     toStatus: params.toStatus ?? null,
     message: params.message,
-    metadata: params.metadata,
+    metadata,
   });
 }
 
@@ -219,6 +237,7 @@ export async function routeAfterLabCompletion(
       ),
     );
 
+  const slug = await businessUnitSlug(tx, businessUnitId);
   const intents: NotificationIntent[] = doctors.map((doctor) => ({
     businessUnitId,
     userId: doctor.userId,
@@ -226,7 +245,7 @@ export async function routeAfterLabCompletion(
     type: 'review_requested',
     title: `New test result to interpret (${order.orderNumber})`,
     body: `Lab analysis is complete for order ${order.orderNumber} and is waiting for your review.`,
-    linkPath: `/portal/doctor/reviews/${orderId}`,
+    linkPath: workspacePath(slug, 'doctor', `/reviews/${orderId}`),
     orderId,
   }));
 
@@ -260,6 +279,7 @@ export async function releaseResults(
     .limit(1);
 
   if (!patient) return [];
+  const slug = await businessUnitSlug(tx, businessUnitId);
 
   return [
     {
@@ -269,7 +289,7 @@ export async function releaseResults(
       type: 'results_released',
       title: `Your results for ${patient.orderNumber} are ready`,
       body: 'Your test results are now available in your dashboard.',
-      linkPath: `/portal/orders/${orderId}`,
+      linkPath: workspacePath(slug, 'patient', `/orders/${orderId}`),
       orderId,
     },
   ];

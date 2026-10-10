@@ -51,16 +51,18 @@ const TRANSITIONS: Record<OrderStatus, readonly Transition[]> = {
     { to: 'dispatched_to_fulfillment', roles: ['system'] },
     { to: 'cancelled', roles: ['bu_admin'] },
   ],
+  // `system` on the three custody hand-offs is a scan catching up a step nobody recorded: someone
+  // further down the chain is holding the kit, which proves the earlier hand-off happened.
   dispatched_to_fulfillment: [
-    { to: 'kit_shipped', roles: ['fulfillment'] },
+    { to: 'kit_shipped', roles: ['fulfillment', 'system'] },
     { to: 'cancelled', roles: ['bu_admin'] },
   ],
   kit_shipped: [
-    { to: 'kit_received_by_patient', roles: ['patient', 'fulfillment'] },
+    { to: 'kit_received_by_patient', roles: ['patient', 'fulfillment', 'system'] },
     { to: 'cancelled', roles: ['bu_admin'] },
   ],
   kit_received_by_patient: [
-    { to: 'sample_in_transit', roles: ['patient'] },
+    { to: 'sample_in_transit', roles: ['patient', 'system'] },
     { to: 'cancelled', roles: ['bu_admin'] },
   ],
   sample_in_transit: [

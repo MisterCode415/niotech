@@ -4,9 +4,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ORDER_ISSUE_REASONS, ORDER_ISSUE_REASON_LABELS } from '@nio/shared';
 import { api } from '../../lib/api';
 import { date } from '../../lib/format';
-import { useAuth } from '../../lib/auth';
 import {
   Loading,
+  MockBadge,
   StatusBadge,
   Timeline,
   AddressBlock,
@@ -20,6 +20,7 @@ interface Detail {
   order: {
     id: string;
     orderNumber: string;
+    isMock?: boolean;
     status: string;
     shippingAddress: Parameters<typeof AddressBlock>[0]['address'];
     shippingMethod: string;
@@ -30,6 +31,7 @@ interface Detail {
   kits: Array<{
     id: string;
     kitNumber: number;
+    serial: string;
     status: string;
     testTypeName: string;
     qrPayload: string;
@@ -46,10 +48,9 @@ interface Detail {
 
 export function FulfillmentOrder() {
   const { orderId = '' } = useParams();
-  const { me } = useAuth();
   const queryClient = useQueryClient();
 
-  const slug = me?.memberships.find((m) => m.role === 'fulfillment')?.businessUnitSlug;
+  const { slug } = useParams();
   const base = `/api/bu/${slug}/fulfillment/orders/${orderId}`;
 
   const [externalId, setExternalId] = useState('');
@@ -115,10 +116,10 @@ export function FulfillmentOrder() {
     <>
       <div className="page-header no-print">
         <div>
-          <Link to="/portal/fulfillment" className="small muted">
+          <Link to={`/w/${slug}/fulfillment`} className="small muted">
             ← Queue
           </Link>
-          <h1 style={{ marginTop: 8 }}>{data.order.orderNumber}</h1>
+          <h1 style={{ marginTop: 8 }}>{data.order.orderNumber} <MockBadge show={data.order.isMock} /></h1>
           <p>
             {data.order.packageName} for {data.order.patientName}
           </p>
@@ -195,6 +196,7 @@ export function FulfillmentOrder() {
           <QrSticker
             key={kit.id}
             value={kit.qrPayload}
+            serial={kit.serial}
             orderNumber={data.order.orderNumber}
             externalOrderId={data.order.externalFulfillmentId}
             kitNumber={kit.kitNumber}

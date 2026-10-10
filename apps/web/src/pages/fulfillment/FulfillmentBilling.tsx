@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
+import { useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api';
 import { money, date } from '../../lib/format';
-import { useAuth } from '../../lib/auth';
 import { Loading, Empty, Alert, Field, Stat } from '../../components/ui';
 
 interface Account {
@@ -22,9 +22,8 @@ interface Charge {
 }
 
 export function FulfillmentBilling() {
-  const { me } = useAuth();
   const queryClient = useQueryClient();
-  const slug = me?.memberships.find((m) => m.role === 'fulfillment')?.businessUnitSlug;
+  const { slug } = useParams();
 
   const [form, setForm] = useState<Account>({
     accountName: '',

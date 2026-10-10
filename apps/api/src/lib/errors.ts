@@ -3,6 +3,8 @@ export class HttpError extends Error {
     public readonly statusCode: number,
     message: string,
     public readonly code?: string,
+    /** Safe, non-PHI values the client needs to recover (for example an organization to sign in to). */
+    public readonly details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = 'HttpError';

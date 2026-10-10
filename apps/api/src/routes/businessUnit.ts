@@ -24,8 +24,17 @@ import {
 } from '../db/schema.js';
 import { badRequest, conflict, notFound } from '../lib/errors.js';
 import { sendInvitationEmail } from '../services/notifications.js';
+import { queueCatalogSync, stripeEnabled, syncPackageCatalog } from '../services/stripe.js';
 
 const slugParam = z.object({ slug: z.string() });
+
+function activationError(
+  requestedStatus: string,
+  sync: { status: string; error?: string },
+): string | undefined {
+  if (!stripeEnabled() || requestedStatus !== 'active' || sync.status === 'synced') return;
+  return sync.error ?? 'Package must synchronize with Stripe before activation';
+}
 
 export async function businessUnitRoutes(app: FastifyInstance) {
   app.get('/api/bu/:slug/summary', async (request) => {
@@ -188,7 +197,7 @@ export async function businessUnitRoutes(app: FastifyInstance) {
           internalReference: input.internalReference,
           externalProductId: input.externalProductId,
           externalPurchaseUrl: input.externalPurchaseUrl,
-          status: input.status,
+          status: stripeEnabled() && input.status === 'active' ? 'draft' : input.status,
         })
         .returning();
 
@@ -199,11 +208,26 @@ export async function businessUnitRoutes(app: FastifyInstance) {
           quantity: test.quantity,
         })),
       );
+      await queueCatalogSync(tx, ctx.businessUnitId, pkg!.id);
 
       return pkg;
     });
 
-    return reply.status(201).send({ package: created });
+    const sync = await syncPackageCatalog(ctx.businessUnitId, created!.id);
+    let result = created!;
+    if (stripeEnabled() && input.status === 'active' && sync.status === 'synced') {
+      const [activated] = await withTenant(ctx, (tx) =>
+        tx
+          .update(packages)
+          .set({ status: 'active', updatedAt: new Date() })
+          .where(eq(packages.id, created!.id))
+          .returning(),
+      );
+      if (activated) result = activated;
+    }
+    return reply
+      .status(201)
+      .send({ package: result, sync, activationError: activationError(input.status, sync) });
   });
 
   app.put('/api/bu/:slug/packages/:packageId', async (request) => {
@@ -213,12 +237,8 @@ export async function businessUnitRoutes(app: FastifyInstance) {
     const ctx = requireMembership(request, slug, ['bu_admin']);
     const input = updatePackageSchema.parse(request.body);
 
-    return withTenant(ctx, async (tx) => {
-      const [current] = await tx
-        .select()
-        .from(packages)
-        .where(eq(packages.id, packageId))
-        .limit(1);
+    const updateResult = await withTenant(ctx, async (tx) => {
+      const [current] = await tx.select().from(packages).where(eq(packages.id, packageId)).limit(1);
       if (!current) throw notFound('Package not found');
 
       const owned = await tx.select({ id: testTypes.id }).from(testTypes);
@@ -263,7 +283,7 @@ export async function businessUnitRoutes(app: FastifyInstance) {
         externalPurchaseUrl: input.externalPurchaseUrl,
         priceCents: input.priceCents,
         requiresClinician: input.requiresClinician,
-        status: input.status,
+        status: stripeEnabled() && input.status === 'active' ? ('draft' as const) : input.status,
         updatedAt: new Date(),
       };
 
@@ -288,6 +308,8 @@ export async function businessUnitRoutes(app: FastifyInstance) {
           .update(packages)
           .set({ status: 'archived', updatedAt: new Date() })
           .where(eq(packages.id, current.id));
+        await queueCatalogSync(tx, ctx.businessUnitId, current.id);
+        await queueCatalogSync(tx, ctx.businessUnitId, successor!.id);
         return { package: successor!, versioned: true };
       }
 
@@ -307,19 +329,53 @@ export async function businessUnitRoutes(app: FastifyInstance) {
           })),
         );
       }
+      await queueCatalogSync(tx, ctx.businessUnitId, current.id);
       return { package: updated!, versioned: false };
     });
+    const sync = await syncPackageCatalog(ctx.businessUnitId, updateResult.package.id);
+    let resultPackage = updateResult.package;
+    if (stripeEnabled() && input.status === 'active' && sync.status === 'synced') {
+      const [activated] = await withTenant(ctx, (tx) =>
+        tx
+          .update(packages)
+          .set({ status: 'active', updatedAt: new Date() })
+          .where(eq(packages.id, updateResult.package.id))
+          .returning(),
+      );
+      if (activated) resultPackage = activated;
+    }
+    return {
+      ...updateResult,
+      package: resultPackage,
+      sync,
+      activationError: activationError(input.status, sync),
+    };
   });
 
   app.patch('/api/bu/:slug/packages/:packageId/status', async (request) => {
     const { slug } = slugParam.parse(request.params);
     const { packageId } = z.object({ packageId: z.uuid() }).parse(request.params);
-    const { status } = z.object({ status: z.enum(['draft', 'active', 'archived']) }).parse(request.body);
+    const { status } = z
+      .object({ status: z.enum(['draft', 'active', 'archived']) })
+      .parse(request.body);
     const ctx = requireMembership(request, slug, ['bu_admin']);
 
-    const [updated] = await withTenant(ctx, (tx) =>
-      tx.update(packages).set({ status }).where(eq(packages.id, packageId)).returning(),
-    );
+    if (status === 'active' && stripeEnabled()) {
+      await withTenant(ctx, (tx) => queueCatalogSync(tx, ctx.businessUnitId, packageId));
+      const sync = await syncPackageCatalog(ctx.businessUnitId, packageId);
+      if (sync.status !== 'synced') {
+        throw conflict(sync.error ?? 'Package must synchronize before activation');
+      }
+    }
+    const [updated] = await withTenant(ctx, async (tx) => {
+      const rows = await tx
+        .update(packages)
+        .set({ status, updatedAt: new Date() })
+        .where(eq(packages.id, packageId))
+        .returning();
+      if (status === 'archived') await queueCatalogSync(tx, ctx.businessUnitId, packageId);
+      return rows;
+    });
     if (!updated) throw notFound('Package not found');
     return { package: updated };
   });
@@ -340,14 +396,60 @@ export async function businessUnitRoutes(app: FastifyInstance) {
           name: users.name,
           role: memberships.role,
           status: memberships.status,
+          userStatus: users.status,
+          lastSignInAt: users.lastSignInAt,
+          isMock: users.isMock,
           createdAt: memberships.createdAt,
         })
         .from(memberships)
         .innerJoin(users, eq(users.id, memberships.userId))
-        .orderBy(memberships.role, users.name),
+        .orderBy(users.name, memberships.role),
     );
 
-    return { members: rows };
+    return { members: rows, signInPath: `/login?org=${encodeURIComponent(slug)}` };
+  });
+
+  /** Re-sends the invitation, with a fresh password link if the person never activated. */
+  app.post('/api/bu/:slug/members/:membershipId/resend', async (request) => {
+    const { slug, membershipId } = z
+      .object({ slug: z.string(), membershipId: z.uuid() })
+      .parse(request.params);
+    const ctx = requireMembership(request, slug, ['bu_admin']);
+
+    const [member] = await withTenant(ctx, (tx) =>
+      tx
+        .select({ email: users.email, name: users.name, role: memberships.role, isMock: users.isMock })
+        .from(memberships)
+        .innerJoin(users, eq(users.id, memberships.userId))
+        .where(eq(memberships.id, membershipId))
+        .limit(1),
+    );
+    if (!member) throw notFound('Member not found');
+    if (member.isMock) throw badRequest('Mock patients cannot receive invitations');
+
+    const [businessUnit] = await withPlatformScope((tx) =>
+      tx.select().from(businessUnits).where(eq(businessUnits.id, ctx.businessUnitId)).limit(1),
+    );
+    if (!businessUnit) throw notFound('Business unit not found');
+
+    const invited = await authProvider().inviteUser({
+      orgId: businessUnit.auth0OrgId,
+      email: member.email,
+      name: member.name,
+      loginPath: `/login?org=${encodeURIComponent(slug)}`,
+    });
+    if (!invited.signInUrl) {
+      return { sent: false, reason: 'This environment does not send invitation emails' };
+    }
+    await sendInvitationEmail({
+      email: member.email,
+      name: member.name,
+      passwordSetUrl: invited.passwordSetUrl,
+      signInUrl: invited.signInUrl,
+      workspaceName: businessUnit.name,
+      roleLabel: ROLE_LABELS[member.role],
+    });
+    return { sent: true, includesPasswordLink: Boolean(invited.passwordSetUrl) };
   });
 
   /** Creates the workflow accounts: fulfillment, lab, doctor, extra admins. */
@@ -420,7 +522,9 @@ export async function businessUnitRoutes(app: FastifyInstance) {
       tx
         .update(memberships)
         .set({ status })
-        .where(and(eq(memberships.id, membershipId), eq(memberships.businessUnitId, ctx.businessUnitId)))
+        .where(
+          and(eq(memberships.id, membershipId), eq(memberships.businessUnitId, ctx.businessUnitId)),
+        )
         .returning(),
     );
 
@@ -439,6 +543,7 @@ export async function businessUnitRoutes(app: FastifyInstance) {
         .select({
           id: orders.id,
           orderNumber: orders.orderNumber,
+          isMock: orders.isMock,
           status: orders.status,
           createdAt: orders.createdAt,
           patientName: users.name,

@@ -16,6 +16,7 @@ import {
   syncOrderFromKits,
 } from '../services/orderWorkflow.js';
 import { storage } from '../services/storage.js';
+import { checkInAtLab } from '../services/kitCustody.js';
 
 const slugParam = z.object({ slug: z.string() });
 const kitParam = slugParam.extend({ kitId: z.uuid() });
@@ -34,12 +35,14 @@ export async function labRoutes(app: FastifyInstance) {
         .select({
           kitId: kits.id,
           kitNumber: kits.kitNumber,
+          serial: kits.serial,
           kitStatus: kits.status,
           externalKitId: kits.externalKitId,
           testTypeName: testTypes.name,
           sampleType: testTypes.sampleType,
           orderId: orders.id,
           orderNumber: orders.orderNumber,
+          isMock: orders.isMock,
           orderStatus: orders.status,
           packageName: packages.name,
           patientName: users.name,
@@ -94,37 +97,7 @@ export async function labRoutes(app: FastifyInstance) {
         throw badRequest('This sample is not marked as in transit to the lab');
       }
 
-      const actor = {
-        businessUnitId: ctx.businessUnitId,
-        actorRole: 'lab' as const,
-        actorUserId: ctx.userId,
-      };
-
-      await setKitStatus(tx, actor, kitId, 'received_by_lab');
-      await recordEvent(tx, {
-        businessUnitId: ctx.businessUnitId,
-        orderId: kit.orderId,
-        kitId,
-        actorUserId: ctx.userId,
-        actorRole: 'lab',
-        message: `Sample for kit #${kit.kitNumber} checked in at the lab`,
-      });
-
-      await tx
-        .insert(labResults)
-        .values({
-          businessUnitId: ctx.businessUnitId,
-          orderId: kit.orderId,
-          kitId,
-          labUserId: ctx.userId,
-          receivedAt: new Date(),
-        })
-        .onConflictDoUpdate({
-          target: labResults.kitId,
-          set: { receivedAt: new Date(), labUserId: ctx.userId },
-        });
-
-      await syncOrderFromKits(tx, actor, kit.orderId, 'All samples received by the lab');
+      await checkInAtLab(tx, ctx, kit);
       return { kitStatus: 'received_by_lab', orderId: kit.orderId };
     });
   });

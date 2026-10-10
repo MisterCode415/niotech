@@ -3,9 +3,9 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { api, fetchBlobUrl } from '../../lib/api';
 import { date, bytes } from '../../lib/format';
-import { useAuth } from '../../lib/auth';
 import {
   Loading,
+  MockBadge,
   StatusBadge,
   Timeline,
   Alert,
@@ -17,6 +17,7 @@ interface Detail {
   order: {
     id: string;
     orderNumber: string;
+    isMock?: boolean;
     status: string;
     packageName: string;
     packageFocusArea: string | null;
@@ -42,10 +43,9 @@ interface Detail {
 
 export function DoctorReview() {
   const { orderId = '' } = useParams();
-  const { me } = useAuth();
   const navigate = useNavigate();
 
-  const slug = me?.memberships.find((m) => m.role === 'doctor')?.businessUnitSlug;
+  const { slug } = useParams();
   const base = `/api/bu/${slug}/doctor/reviews/${orderId}`;
 
   const [interpretation, setInterpretation] = useState('');
@@ -64,7 +64,7 @@ export function DoctorReview() {
         method: 'POST',
         body: { decision, interpretation, recommendations: recommendations || undefined },
       }),
-    onSuccess: () => navigate('/portal/doctor'),
+    onSuccess: () => navigate(`/w/${slug}/doctor`),
     onError: (err: Error) => setError(err.message),
   });
 
@@ -76,12 +76,12 @@ export function DoctorReview() {
     <>
       <div className="page-header">
         <div>
-          <Link to="/portal/doctor" className="small muted">
+          <Link to={`/w/${slug}/doctor`} className="small muted">
             ← Review queue
           </Link>
           <h1 style={{ marginTop: 8 }}>{data.order.patientName}</h1>
           <p className="mono">
-            {data.order.orderNumber} · {data.order.packageName}
+            {data.order.orderNumber} · {data.order.packageName} <MockBadge show={data.order.isMock} />
           </p>
         </div>
         <StatusBadge status={data.order.status} />

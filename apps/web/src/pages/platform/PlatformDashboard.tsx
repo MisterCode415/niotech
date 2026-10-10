@@ -1,6 +1,13 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { BusinessUnitStatus } from '@nio/shared';
+import {
+  MEMBERSHIP_ROLES,
+  ROLE_LABELS,
+  workspacePath,
+  type BusinessUnitStatus,
+  type MembershipRole,
+} from '@nio/shared';
 import { api } from '../../lib/api';
 import { date } from '../../lib/format';
 import { Loading, Empty, Stat, Alert, Field } from '../../components/ui';
@@ -24,6 +31,7 @@ const STATUS_TONE: Record<BusinessUnitStatus, string> = {
 
 export function PlatformDashboard() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [form, setForm] = useState({ name: '', slug: '', adminEmail: '', adminName: '' });
   const [message, setMessage] = useState('');
   const [isError, setIsError] = useState(false);
@@ -174,6 +182,26 @@ export function PlatformDashboard() {
                       </span>
                     </td>
                     <td>
+                      <select
+                        value=""
+                        aria-label={`Enter ${businessUnit.name}`}
+                        disabled={businessUnit.status === 'removed'}
+                        onChange={(event) =>
+                          navigate(
+                            workspacePath(businessUnit.slug, event.target.value as MembershipRole),
+                          )
+                        }
+                        style={{ marginBottom: 6 }}
+                      >
+                        <option value="" disabled>
+                          Enter as…
+                        </option>
+                        {MEMBERSHIP_ROLES.map((role) => (
+                          <option key={role} value={role}>
+                            {ROLE_LABELS[role]}
+                          </option>
+                        ))}
+                      </select>
                       <select
                         value={businessUnit.status}
                         onChange={(event) =>

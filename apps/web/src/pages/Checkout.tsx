@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
+import { workspacePath } from '@nio/shared';
 import { useQuery } from '@tanstack/react-query';
 import { SHIPPING_METHODS, SHIPPING_METHOD_LABELS } from '@nio/shared';
 import { api } from '../lib/api';
@@ -52,12 +53,19 @@ export function Checkout() {
       });
 
       // Payment is mocked for now, but it is a separate call so a real processor slots in here.
-      await api(`/api/bu/${slug}/patient/orders/${order.id}/pay`, {
-        method: 'POST',
-        body: { paymentToken: 'mock-token' },
-      });
+      const payment = await api<{ checkoutUrl?: string }>(
+        `/api/bu/${slug}/patient/orders/${order.id}/pay`,
+        {
+          method: 'POST',
+          body: { paymentToken: 'mock-token' },
+        },
+      );
+      if (payment.checkoutUrl) {
+        window.location.assign(payment.checkoutUrl);
+        return;
+      }
 
-      navigate(`/portal/orders/${order.id}`);
+      navigate(workspacePath(slug, 'patient', `/orders/${order.id}`));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not place the order');
     } finally {
@@ -136,7 +144,7 @@ export function Checkout() {
             {busy ? 'Placing order…' : `Pay ${money(pkg.priceCents)}`}
           </button>
           <p className="small muted" style={{ marginTop: 10, marginBottom: 0 }}>
-            Payment is simulated in this environment. No card is charged.
+            You will continue to secure payment after confirming your shipping details.
           </p>
         </form>
 

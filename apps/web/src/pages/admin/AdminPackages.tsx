@@ -74,6 +74,7 @@ export function AdminPackages() {
   function fail(err: Error) {
     setIsError(true);
     setMessage(err.message);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
   const createTestType = useMutation({
@@ -91,31 +92,38 @@ export function AdminPackages() {
 
   const savePackage = useMutation({
     mutationFn: () =>
-      api<{ versioned?: boolean }>(`/api/bu/${slug}/packages${editingId ? `/${editingId}` : ''}`, {
-        method: editingId ? 'PUT' : 'POST',
-        body: {
-          name: pkgForm.name,
-          description: pkgForm.description || undefined,
-          focusArea: pkgForm.focusArea || undefined,
-          internalReference: pkgForm.internalReference || undefined,
-          externalProductId: pkgForm.externalProductId || undefined,
-          externalPurchaseUrl: pkgForm.externalPurchaseUrl || undefined,
-          priceCents: Math.round(Number(pkgForm.price) * 100),
-          requiresClinician: pkgForm.requiresClinician,
-          status: pkgForm.status,
-          tests: Object.entries(selected)
-            .filter(([, quantity]) => quantity > 0)
-            .map(([testTypeId, quantity]) => ({ testTypeId, quantity })),
+      api<{ versioned?: boolean; activationError?: string }>(
+        `/api/bu/${slug}/packages${editingId ? `/${editingId}` : ''}`,
+        {
+          method: editingId ? 'PUT' : 'POST',
+          body: {
+            name: pkgForm.name,
+            description: pkgForm.description || undefined,
+            focusArea: pkgForm.focusArea || undefined,
+            internalReference: pkgForm.internalReference || undefined,
+            externalProductId: pkgForm.externalProductId || undefined,
+            externalPurchaseUrl: pkgForm.externalPurchaseUrl || undefined,
+            priceCents: Math.round(Number(pkgForm.price) * 100),
+            requiresClinician: pkgForm.requiresClinician,
+            status: pkgForm.status,
+            tests: Object.entries(selected)
+              .filter(([, quantity]) => quantity > 0)
+              .map(([testTypeId, quantity]) => ({ testTypeId, quantity })),
+          },
         },
-      }),
-    onSuccess: (result: { versioned?: boolean }) => {
-      done(
-        editingId
-          ? result.versioned
-            ? 'A new package version was created; the sold version was archived.'
-            : 'Package updated.'
-          : 'Package created as a draft.',
-      );
+      ),
+    onSuccess: (result) => {
+      const saved = editingId
+        ? result.versioned
+          ? 'A new package version was created; the sold version was archived.'
+          : 'Package updated.'
+        : 'Package created.';
+      if (result.activationError) {
+        void queryClient.invalidateQueries({ queryKey: ['admin', slug] });
+        fail(new Error(`${saved} It stays in Draft: ${result.activationError}`));
+      } else {
+        done(saved);
+      }
       setPkgForm({
         name: '',
         description: '',
@@ -256,7 +264,10 @@ export function AdminPackages() {
                 placeholder="METABOLIC-01"
               />
             </Field>
-            <Field label="External product reference" hint="Stripe, Shopify, or partner product ID.">
+            <Field
+              label="External product reference"
+              hint="Stripe, Shopify, or partner product ID."
+            >
               <input
                 value={pkgForm.externalProductId}
                 onChange={(e) => setPkgForm({ ...pkgForm, externalProductId: e.target.value })}
@@ -377,7 +388,9 @@ export function AdminPackages() {
                     <div className="small muted">
                       {pkg.focusArea ?? '—'} · v{pkg.version}
                     </div>
-                    <div className="small mono">{pkg.internalReference ?? 'No internal reference'}</div>
+                    <div className="small mono">
+                      {pkg.internalReference ?? 'No internal reference'}
+                    </div>
                   </td>
                   <td className="small">
                     {pkg.tests.map((test) => (

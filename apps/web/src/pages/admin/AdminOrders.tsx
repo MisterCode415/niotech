@@ -2,11 +2,12 @@ import { useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api';
 import { date } from '../../lib/format';
-import { Loading, Empty, StatusBadge } from '../../components/ui';
+import { MockBadge, Loading, Empty, StatusBadge } from '../../components/ui';
 
 interface OrderRow {
   id: string;
   orderNumber: string;
+  isMock?: boolean;
   status: string;
   createdAt: string;
   patientName: string;
@@ -50,7 +51,7 @@ export function AdminOrders() {
             <tbody>
               {data!.orders.map((order) => (
                 <tr key={order.id}>
-                  <td className="mono">{order.orderNumber}</td>
+                  <td className="mono">{order.orderNumber} <MockBadge show={order.isMock} /></td>
                   <td>{order.patientName}</td>
                   <td>
                     {order.packageName}

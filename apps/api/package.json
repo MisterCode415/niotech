@@ -24,9 +24,11 @@
     "dotenv": "^17.2.3",
     "drizzle-orm": "^0.44.7",
     "fastify": "^5.6.1",
+    "fastify-raw-body": "^6.0.1",
     "jose": "^6.1.0",
     "nodemailer": "^7.0.9",
     "postgres": "^3.4.7",
+    "stripe": "^22.6.2",
     "zod": "^4.1.13"
   },
   "devDependencies": {

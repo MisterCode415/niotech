@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { and, desc, eq } from 'drizzle-orm';
 import { z } from 'zod';
-import { registerPatientSchema } from '@nio/shared';
+import { registerPatientSchema, workspacePath } from '@nio/shared';
 import { findPublicBusinessUnit } from '../auth/context.js';
 import { authProvider } from '../auth/index.js';
 import { sendInvitationEmail } from '../services/notifications.js';
@@ -115,7 +115,7 @@ export async function publicRoutes(app: FastifyInstance) {
 
       const returnTo = input.packageId
         ? `/${slug}/checkout/${input.packageId}`
-        : '/portal/orders';
+        : workspacePath(slug, 'patient');
       const invited = await authProvider().inviteUser({
         orgId: businessUnit.auth0OrgId,
         email: input.email,

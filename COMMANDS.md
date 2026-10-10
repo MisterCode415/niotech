@@ -183,6 +183,15 @@ Generate the alpha server-to-server commerce key directly on the VM:
 printf 'INTEGRATION_API_SECRET=%s\n' "$(openssl rand -hex 32)" >> .env.production
 ```
 
+dev.qinio.co is a test stack, so enable the mock-flow buttons there (never on a stack with real
+patients). Recreate the API container afterwards so it picks up the change:
+
+```bash
+grep -q '^SIMULATION_ENABLED=' .env.production \
+  && sed -i 's/^SIMULATION_ENABLED=.*/SIMULATION_ENABLED=true/' .env.production \
+  || echo 'SIMULATION_ENABLED=true' >> .env.production
+```
+
 Inspect whether keys exist without printing their values:
 
 ```bash
@@ -219,6 +228,88 @@ curl -fsS -X POST "https://${APP_HOST}/api/integrations/vitality/purchases" \
 ```
 
 Sending the same `source` and `externalOrderId` again is an idempotent replay.
+
+## Stripe Connect sandbox
+
+Stripe Dashboard one-time setup:
+
+1. Enable Connect in test mode and choose Standard connected accounts.
+2. Add OAuth callbacks:
+   `http://localhost:4000/api/payments/stripe/callback` and
+   `https://dev.qinio.co/api/payments/stripe/callback`.
+3. Create a connected-accounts webhook for `https://dev.qinio.co/api/webhooks/stripe`.
+4. Enable `account.updated`, `product.updated`, `product.deleted`, `price.updated`,
+   `checkout.session.completed`, `checkout.session.expired`,
+   `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`,
+   `payment_intent.succeeded`, `payment_intent.payment_failed`, `charge.refunded`,
+   `charge.dispute.created`, and `charge.dispute.closed`.
+5. Copy the test secret key, Connect client ID, and Connect webhook signing secret. Do not use the
+   signing secret from a normal platform-account webhook.
+
+Configure local `.env` without printing secrets into shell history:
+
+```dotenv
+PAYMENT_PROVIDER=stripe
+STRIPE_SECRET_KEY=sk_test_REDACTED
+STRIPE_CONNECT_CLIENT_ID=ca_REDACTED
+STRIPE_WEBHOOK_SECRET=whsec_REDACTED
+STRIPE_CURRENCY=usd
+STRIPE_PLATFORM_FEE_BPS=0
+STRIPE_LIVE_MODE=false
+```
+
+Install and authenticate Stripe CLI on macOS:
+
+```bash
+brew install stripe/stripe-cli/stripe
+stripe login
+stripe listen --forward-connect-to localhost:4000/api/webhooks/stripe
+```
+
+The listener prints a temporary `whsec_...`; use that value locally while the listener is running.
+Start Qinio in a second terminal, connect a BU from **Payments**, and complete Stripe's test
+onboarding.
+
+Useful test cards:
+
+```text
+Successful card:  4242 4242 4242 4242
+Declined card:    4000 0000 0000 0002
+3DS challenge:    4000 0025 0000 3155
+Expiry/CVC:       any future date / any three digits
+```
+
+Inspect connected-account events and replay one to the configured endpoint:
+
+```bash
+stripe events list --limit 10
+stripe events resend evt_REPLACE_ME \
+  --webhook-endpoint we_REPLACE_ME
+```
+
+Run a local test dispute against a connected account:
+
+```bash
+export STRIPE_CONNECTED_ACCOUNT=acct_REPLACE_ME
+stripe trigger charge.dispute.created --stripe-account "$STRIPE_CONNECTED_ACCOUNT"
+```
+
+Set the same variables in the VM's `.env.production`, still using test-mode values for the
+sandbox. Confirm key modes without printing key contents:
+
+```bash
+for key in \
+  STRIPE_SECRET_KEY STRIPE_CONNECT_CLIENT_ID STRIPE_WEBHOOK_SECRET \
+  STRIPE_CURRENCY STRIPE_PLATFORM_FEE_BPS STRIPE_LIVE_MODE
+do
+  grep -Eq "^${key}=.+" .env.production && echo "$key=set" || echo "$key=missing"
+done
+```
+
+Then use the normal migration/deploy procedure. Keep `STRIPE_LIVE_MODE=false` with `sk_test_...`.
+Before changing to live values, obtain restricted-business approval, configure bank/payout
+accounts, duplicate OAuth/webhook setup in live mode, define refund/dispute ownership, and verify
+monitoring.
 
 ## Restricted PostgreSQL runtime role
 

@@ -11,7 +11,6 @@ import {
   orders,
   packageTestTypes,
   packages,
-  shipments,
   testTypes,
 } from '../db/schema.js';
 import { badRequest, forbidden, notFound } from '../lib/errors.js';
@@ -20,12 +19,10 @@ import { getOrderDetail } from '../services/orderQueries.js';
 import { paymentProvider } from '../services/payments.js';
 import { dispatchNotifications } from '../services/notifications.js';
 import { dispatchPaidOrder } from '../services/paidOrder.js';
-import {
-  recordEvent,
-  setKitStatus,
-  syncOrderFromKits,
-} from '../services/orderWorkflow.js';
+import { createCheckoutSession, stripeEnabled } from '../services/stripe.js';
+import { recordEvent } from '../services/orderWorkflow.js';
 import { storage } from '../services/storage.js';
+import { markReceivedByPatient, markSampleSent } from '../services/kitCustody.js';
 
 const slugParam = z.object({ slug: z.string() });
 const orderParam = slugParam.extend({ orderId: z.uuid() });
@@ -41,6 +38,7 @@ export async function patientRoutes(app: FastifyInstance) {
         .select({
           id: orders.id,
           orderNumber: orders.orderNumber,
+          isMock: orders.isMock,
           status: orders.status,
           priceCents: orders.priceCents,
           createdAt: orders.createdAt,
@@ -133,6 +131,27 @@ export async function patientRoutes(app: FastifyInstance) {
     const ctx = requireMembership(request, slug, ['patient']);
     const input = payOrderSchema.parse(request.body ?? {});
 
+    if (stripeEnabled()) {
+      const [order] = await withTenant(ctx, (tx) =>
+        tx
+          .select()
+          .from(orders)
+          .where(and(eq(orders.id, orderId), eq(orders.patientUserId, ctx.userId)))
+          .limit(1),
+      );
+      if (!order) throw notFound('Order not found');
+      if (order.status !== 'pending_payment') throw badRequest('Order is not awaiting payment');
+      const session = await createCheckoutSession({
+        businessUnitId: ctx.businessUnitId,
+        businessUnitSlug: slug,
+        orderId: order.id,
+        packageId: order.packageId,
+        amountCents: order.priceCents,
+        customerEmail: ctx.actor.identity.email,
+      });
+      return { status: 'pending_payment', checkoutUrl: session.url };
+    }
+
     const { status, intents } = await withTenant(ctx, async (tx) => {
       const [order] = await tx
         .select()
@@ -173,10 +192,9 @@ export async function patientRoutes(app: FastifyInstance) {
     const { slug, orderId } = orderParam.parse(request.params);
     const ctx = requireMembership(request, slug, ['patient']);
 
-    const detail = await withTenant(ctx, (tx) =>
-      getOrderDetail(tx, ctx.businessUnitId, orderId),
-    );
-    if (detail.order.patientId !== ctx.userId) throw forbidden('This order belongs to another patient');
+    const detail = await withTenant(ctx, (tx) => getOrderDetail(tx, ctx.businessUnitId, orderId));
+    if (detail.order.patientId !== ctx.userId)
+      throw forbidden('This order belongs to another patient');
 
     // Results are only visible once released; before that the doctor's queue owns them.
     const released = detail.order.status === 'results_released';
@@ -210,23 +228,7 @@ export async function patientRoutes(app: FastifyInstance) {
       if (!kit) throw notFound('Kit not found');
       if (kit.status !== 'shipped') throw badRequest('This kit has not shipped yet');
 
-      const actor = {
-        businessUnitId: ctx.businessUnitId,
-        actorRole: 'patient' as const,
-        actorUserId: ctx.userId,
-      };
-
-      await setKitStatus(tx, actor, kitId, 'received_by_patient');
-      await recordEvent(tx, {
-        businessUnitId: ctx.businessUnitId,
-        orderId,
-        kitId,
-        actorUserId: ctx.userId,
-        actorRole: 'patient',
-        message: `Kit #${kit.kitNumber} confirmed received by patient`,
-      });
-      await syncOrderFromKits(tx, actor, orderId, 'All kits received by patient');
-
+      await markReceivedByPatient(tx, ctx, kit);
       return { kitStatus: 'received_by_patient' };
     });
   });
@@ -254,34 +256,7 @@ export async function patientRoutes(app: FastifyInstance) {
         throw badRequest('Confirm you received this kit before sending the sample');
       }
 
-      const actor = {
-        businessUnitId: ctx.businessUnitId,
-        actorRole: 'patient' as const,
-        actorUserId: ctx.userId,
-      };
-
-      await setKitStatus(tx, actor, kitId, 'sample_in_transit');
-      await recordEvent(tx, {
-        businessUnitId: ctx.businessUnitId,
-        orderId,
-        kitId,
-        actorUserId: ctx.userId,
-        actorRole: 'patient',
-        message: `Sample for kit #${kit.kitNumber} sent to the lab`,
-      });
-
-      await tx
-        .insert(shipments)
-        .values({
-          businessUnitId: ctx.businessUnitId,
-          orderId,
-          direction: 'inbound_to_lab',
-          shippedAt: new Date(),
-        })
-        .onConflictDoNothing();
-
-      await syncOrderFromKits(tx, actor, orderId, 'All samples are in transit to the lab');
-
+      await markSampleSent(tx, ctx, kit);
       return { kitStatus: 'sample_in_transit' };
     });
   });
@@ -300,7 +275,8 @@ export async function patientRoutes(app: FastifyInstance) {
         .limit(1);
       if (!order) throw notFound('Order not found');
       if (order.patientUserId !== ctx.userId) throw forbidden();
-      if (order.status !== 'results_released') throw forbidden('Results have not been released yet');
+      if (order.status !== 'results_released')
+        throw forbidden('Results have not been released yet');
 
       const [row] = await tx
         .select({

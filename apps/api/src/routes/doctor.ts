@@ -24,6 +24,7 @@ export async function doctorRoutes(app: FastifyInstance) {
         .select({
           orderId: orders.id,
           orderNumber: orders.orderNumber,
+          isMock: orders.isMock,
           patientName: users.name,
           packageName: packages.name,
           focusArea: packages.focusArea,
@@ -40,6 +41,7 @@ export async function doctorRoutes(app: FastifyInstance) {
         .select({
           orderId: orders.id,
           orderNumber: orders.orderNumber,
+          isMock: orders.isMock,
           patientName: users.name,
           decision: clinicianReviews.decision,
           decidedAt: clinicianReviews.decidedAt,

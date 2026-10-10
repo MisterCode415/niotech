@@ -2,6 +2,7 @@ import Fastify, { type FastifyError } from 'fastify';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
+import rawBody from 'fastify-raw-body';
 import { ZodError, z } from 'zod';
 import { env } from './env.js';
 import { HttpError } from './lib/errors.js';
@@ -18,6 +19,10 @@ import { scanRoutes } from './routes/scan.js';
 import { notificationRoutes } from './routes/notifications.js';
 import { publicRoutes } from './routes/public.js';
 import { integrationRoutes } from './routes/integrations.js';
+import { paymentRoutes } from './routes/payments.js';
+import { stripeWebhookRoutes } from './routes/stripeWebhooks.js';
+import { simulationRoutes } from './routes/simulation.js';
+import { processCatalogSyncJobs, stripeEnabled } from './services/stripe.js';
 
 export async function buildApp() {
   const app = Fastify({
@@ -53,6 +58,12 @@ export async function buildApp() {
     max: 300,
     timeWindow: '1 minute',
   });
+  await app.register(rawBody, {
+    field: 'rawBody',
+    global: false,
+    encoding: false,
+    runFirst: true,
+  });
 
   app.decorateRequest('actor', null);
 
@@ -64,7 +75,9 @@ export async function buildApp() {
     const statusCode = error.statusCode;
 
     if (error instanceof HttpError) {
-      return reply.status(error.statusCode).send({ error: error.message, code: error.code });
+      return reply
+        .status(error.statusCode)
+        .send({ error: error.message, code: error.code, details: error.details });
     }
     if (error instanceof ZodError) {
       return reply.status(400).send({ error: 'Validation failed', details: z.treeifyError(error) });
@@ -82,6 +95,8 @@ export async function buildApp() {
   await app.register(authRoutes);
   await app.register(publicRoutes);
   await app.register(integrationRoutes);
+  await app.register(stripeWebhookRoutes);
+  await app.register(paymentRoutes);
   await app.register(platformRoutes);
   await app.register(businessUnitRoutes);
   await app.register(patientRoutes);
@@ -90,6 +105,15 @@ export async function buildApp() {
   await app.register(doctorRoutes);
   await app.register(scanRoutes);
   await app.register(notificationRoutes);
+  await app.register(simulationRoutes);
+
+  if (stripeEnabled()) {
+    const catalogTimer = setInterval(() => {
+      void processCatalogSyncJobs().catch((error) => app.log.error(error));
+    }, 60_000);
+    catalogTimer.unref();
+    app.addHook('onClose', async () => clearInterval(catalogTimer));
+  }
 
   return app;
 }

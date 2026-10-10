@@ -24,6 +24,7 @@ export async function getOrderDetail(tx: Tx, businessUnitId: string, orderId: st
     .select({
       id: orders.id,
       orderNumber: orders.orderNumber,
+      isMock: orders.isMock,
       status: orders.status,
       priceCents: orders.priceCents,
       paymentStatus: orders.paymentStatus,
@@ -54,6 +55,7 @@ export async function getOrderDetail(tx: Tx, businessUnitId: string, orderId: st
       kitNumber: kits.kitNumber,
       status: kits.status,
       qrToken: kits.qrToken,
+      serial: kits.serial,
       externalKitId: kits.externalKitId,
       testTypeName: testTypes.name,
       sampleType: testTypes.sampleType,
@@ -83,7 +85,7 @@ export async function getOrderDetail(tx: Tx, businessUnitId: string, orderId: st
     .from(orderEvents)
     .leftJoin(users, eq(users.id, orderEvents.actorUserId))
     .where(eq(orderEvents.orderId, orderId))
-    .orderBy(asc(orderEvents.createdAt));
+    .orderBy(asc(orderEvents.eventSequence));
 
   const resultRows = await tx
     .select({
