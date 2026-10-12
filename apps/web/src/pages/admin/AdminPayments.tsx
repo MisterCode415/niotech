@@ -7,6 +7,8 @@ import { Alert, Empty, Loading } from '../../components/ui';
 
 interface PaymentConfig {
   provider: string;
+  livemode: boolean;
+  webhookPath: string;
   account: {
     status: string;
     accountId: string | null;
@@ -125,8 +127,20 @@ export function AdminPayments() {
       <Alert tone="error">{error}</Alert>
       {config.data!.provider !== 'stripe' && (
         <Alert tone="error">
-          Stripe is not enabled in this environment. Set PAYMENT_PROVIDER=stripe and the sandbox
-          credentials on the API.
+          PAYMENT_PROVIDER is {config.data!.provider}. Checkout never creates a Stripe object, so
+          nothing will appear in the Stripe console. Set PAYMENT_PROVIDER=stripe and the sandbox
+          keys on the API, then reconnect this business unit.
+        </Alert>
+      )}
+      {config.data!.provider === 'stripe' && (
+        <Alert tone="info">
+          Mode: {config.data!.livemode ? 'live' : 'test'}. Direct charges land on the{' '}
+          <strong>connected account</strong>, not the platform Payments list. Open the connected
+          account Dashboard (use the Test toggle if this is sandbox). Local webhooks:
+          <span className="mono">
+            {' '}
+            stripe listen --forward-connect-to localhost:4000{config.data!.webhookPath}
+          </span>
         </Alert>
       )}
 
@@ -137,7 +151,8 @@ export function AdminPayments() {
             <h3>{account ? account.status : 'Not connected'}</h3>
             {account && (
               <p className="small muted">
-                Charges {account.chargesEnabled ? 'enabled' : 'disabled'} · Payouts{' '}
+                Account <span className="mono">{account.accountId}</span> · Charges{' '}
+                {account.chargesEnabled ? 'enabled' : 'disabled'} · Payouts{' '}
                 {account.payoutsEnabled ? 'enabled' : 'disabled'}
                 {account.disabledReason ? ` · ${account.disabledReason}` : ''}
               </p>

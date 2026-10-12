@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { and, desc, eq } from 'drizzle-orm';
 import { z } from 'zod';
-import { createOrderSchema, payOrderSchema } from '@nio/shared';
+import { createOrderSchema, payOrderSchema, reportChatSchema } from '@nio/shared';
 import { requireMembership } from '../auth/context.js';
 import { withTenant } from '../db/client.js';
 import {
@@ -23,6 +23,14 @@ import { createCheckoutSession, stripeEnabled } from '../services/stripe.js';
 import { recordEvent } from '../services/orderWorkflow.js';
 import { storage } from '../services/storage.js';
 import { markReceivedByPatient, markSampleSent } from '../services/kitCustody.js';
+import { getOrCreateExtraction } from '../services/pdfExtract.js';
+import {
+  fileIdsForOrder,
+  loadConversation,
+  persistReportChat,
+  prepareReportChat,
+  runReportChat,
+} from '../services/reportChat.js';
 
 const slugParam = z.object({ slug: z.string() });
 const orderParam = slugParam.extend({ orderId: z.uuid() });
@@ -297,5 +305,68 @@ export async function patientRoutes(app: FastifyInstance) {
       .header('content-type', file.mimeType)
       .header('content-disposition', `inline; filename="${file.filename}"`)
       .send(bytes);
+  });
+
+  app.get('/api/bu/:slug/patient/orders/:orderId/results/:fileId/text', async (request) => {
+    const { slug, orderId } = orderParam.parse(request.params);
+    const { fileId } = z.object({ fileId: z.uuid() }).parse(request.params);
+    const ctx = requireMembership(request, slug, ['patient']);
+
+    return withTenant(ctx, async (tx) => {
+      const detail = await getOrderDetail(tx, ctx.businessUnitId, orderId);
+      if (detail.order.patientId !== ctx.userId) throw forbidden('This order belongs to another patient');
+      if (detail.order.status !== 'results_released') throw forbidden('Results have not been released yet');
+      const belongs = detail.results.some((result) => result.fileId === fileId);
+      if (!belongs) throw notFound('Result file not found');
+      const extracted = await getOrCreateExtraction(tx, ctx.businessUnitId, fileId);
+      return extracted;
+    });
+  });
+
+  app.get('/api/bu/:slug/patient/orders/:orderId/conversation', async (request) => {
+    const { slug, orderId } = orderParam.parse(request.params);
+    const ctx = requireMembership(request, slug, ['patient']);
+    return withTenant(ctx, async (tx) => {
+      const detail = await getOrderDetail(tx, ctx.businessUnitId, orderId);
+      if (detail.order.patientId !== ctx.userId) throw forbidden('This order belongs to another patient');
+      if (detail.order.status !== 'results_released') throw forbidden('Results have not been released yet');
+      return loadConversation(tx, orderId);
+    });
+  });
+
+  app.post('/api/bu/:slug/patient/orders/:orderId/conversation', async (request) => {
+    const { slug, orderId } = orderParam.parse(request.params);
+    const ctx = requireMembership(request, slug, ['patient']);
+    const input = reportChatSchema.parse(request.body);
+
+    const prepared = await withTenant(ctx, async (tx) => {
+      const detail = await getOrderDetail(tx, ctx.businessUnitId, orderId);
+      if (detail.order.patientId !== ctx.userId) throw forbidden('This order belongs to another patient');
+      if (detail.order.status !== 'results_released') throw forbidden('Results have not been released yet');
+      const fileIds = await fileIdsForOrder(tx, orderId);
+      return prepareReportChat(tx, {
+        businessUnitId: ctx.businessUnitId,
+        orderId,
+        prompt: input.prompt,
+        fileIds,
+        interpretation: detail.review?.interpretation ?? null,
+        recommendations: detail.review?.recommendations ?? null,
+      });
+    });
+
+    const { qualifier, completion } = await runReportChat(prepared);
+
+    const conversationId = await withTenant(ctx, (tx) =>
+      persistReportChat(tx, {
+        businessUnitId: ctx.businessUnitId,
+        orderId,
+        patientUserId: ctx.userId,
+        prompt: input.prompt,
+        qualifier,
+        completion,
+      }),
+    );
+
+    return { reply: completion.content, disclaimer: prepared.disclaimer, conversationId };
   });
 }

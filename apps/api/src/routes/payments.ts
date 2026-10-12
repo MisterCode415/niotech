@@ -63,12 +63,20 @@ export async function paymentRoutes(app: FastifyInstance) {
           ),
         )
         .orderBy(packages.name, desc(packages.version));
+      const accountId = account?.providerAccountId ?? null;
+      const livemode = env.STRIPE_SECRET_KEY?.startsWith('sk_live_') ?? false;
+      const dashboardBase = livemode
+        ? 'https://dashboard.stripe.com'
+        : 'https://dashboard.stripe.com/test';
+
       return {
         provider: env.PAYMENT_PROVIDER,
+        livemode,
+        webhookPath: '/api/webhooks/stripe',
         account: account
           ? {
               status: account.status,
-              accountId: account.providerAccountId,
+              accountId,
               chargesEnabled: account.chargesEnabled,
               payoutsEnabled: account.payoutsEnabled,
               detailsSubmitted: account.detailsSubmitted,
@@ -79,7 +87,7 @@ export async function paymentRoutes(app: FastifyInstance) {
             }
           : null,
         mappings,
-        dashboardUrl: account?.providerAccountId ? 'https://dashboard.stripe.com' : null,
+        dashboardUrl: accountId ? `${dashboardBase}/connect/accounts/${accountId}` : null,
       };
     });
   });

@@ -2,6 +2,9 @@ import type { FastifyInstance } from 'fastify';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import {
+  businessUnitAiSettingsSchema,
+  cancelOrderSchema,
+  correctOrderSchema,
   createMemberSchema,
   createPackageSchema,
   createTestTypeSchema,
@@ -13,6 +16,7 @@ import { requireMembership } from '../auth/context.js';
 import { authProvider } from '../auth/index.js';
 import { withPlatformScope, withTenant } from '../db/client.js';
 import {
+  businessUnitAiSettings,
   businessUnits,
   marketingPages,
   memberships,
@@ -23,7 +27,15 @@ import {
   users,
 } from '../db/schema.js';
 import { badRequest, conflict, notFound } from '../lib/errors.js';
-import { sendInvitationEmail } from '../services/notifications.js';
+import { dispatchNotifications, sendInvitationEmail } from '../services/notifications.js';
+import {
+  activeMembersByRole,
+  orderCancelledIntent,
+  orderCorrectedIntent,
+  wasDispatchedToFulfillment,
+} from '../services/orderNotifications.js';
+import { getOrderDetail } from '../services/orderQueries.js';
+import { recordEvent, transitionOrder } from '../services/orderWorkflow.js';
 import { queueCatalogSync, stripeEnabled, syncPackageCatalog } from '../services/stripe.js';
 
 const slugParam = z.object({ slug: z.string() });
@@ -558,5 +570,116 @@ export async function businessUnitRoutes(app: FastifyInstance) {
     );
 
     return { orders: rows };
+  });
+
+  app.post('/api/bu/:slug/orders/:orderId/cancel', async (request) => {
+    const { slug, orderId } = z.object({ slug: z.string(), orderId: z.uuid() }).parse(request.params);
+    const ctx = requireMembership(request, slug, ['bu_admin']);
+    const input = cancelOrderSchema.parse(request.body);
+
+    const { from, intents } = await withTenant(ctx, async (tx) => {
+      const detail = await getOrderDetail(tx, ctx.businessUnitId, orderId);
+      const actor = {
+        businessUnitId: ctx.businessUnitId,
+        actorRole: 'bu_admin' as const,
+        actorUserId: ctx.userId,
+      };
+      const { from: previous } = await transitionOrder(tx, actor, {
+        orderId,
+        to: 'cancelled',
+        message: `Order cancelled: ${input.reason}`,
+        metadata: { reason: input.reason },
+      });
+
+      const notifyCtx = {
+        businessUnitId: ctx.businessUnitId,
+        businessUnitSlug: ctx.businessUnitSlug,
+        orderId,
+        orderNumber: detail.order.orderNumber,
+        isMock: detail.order.isMock,
+      };
+      const intents = [
+        orderCancelledIntent(
+          notifyCtx,
+          { userId: detail.order.patientId, email: detail.order.patientEmail },
+          'patient',
+          input.reason,
+        ),
+      ];
+      if (wasDispatchedToFulfillment(previous)) {
+        const fulfillment = await activeMembersByRole(tx, ctx.businessUnitId, 'fulfillment');
+        for (const member of fulfillment) {
+          intents.push(orderCancelledIntent(notifyCtx, member, 'fulfillment', input.reason));
+        }
+      }
+      return { from: previous, intents };
+    });
+
+    const email = await dispatchNotifications(intents);
+    return { status: 'cancelled', from, email };
+  });
+
+  app.post('/api/bu/:slug/orders/:orderId/corrections', async (request) => {
+    const { slug, orderId } = z.object({ slug: z.string(), orderId: z.uuid() }).parse(request.params);
+    const ctx = requireMembership(request, slug, ['bu_admin']);
+    const input = correctOrderSchema.parse(request.body);
+
+    const intents = await withTenant(ctx, async (tx) => {
+      const detail = await getOrderDetail(tx, ctx.businessUnitId, orderId);
+      await recordEvent(tx, {
+        businessUnitId: ctx.businessUnitId,
+        orderId,
+        actorUserId: ctx.userId,
+        actorRole: 'bu_admin',
+        message: `Correction sent to patient: ${input.note}`,
+        metadata: { reason: 'order_corrected', note: input.note },
+      });
+      return [
+        orderCorrectedIntent(
+          {
+            businessUnitId: ctx.businessUnitId,
+            businessUnitSlug: ctx.businessUnitSlug,
+            orderId,
+            orderNumber: detail.order.orderNumber,
+            isMock: detail.order.isMock,
+          },
+          { userId: detail.order.patientId, email: detail.order.patientEmail },
+          input.note,
+        ),
+      ];
+    });
+
+    const email = await dispatchNotifications(intents);
+    return { email };
+  });
+
+  app.get('/api/bu/:slug/ai', async (request) => {
+    const { slug } = slugParam.parse(request.params);
+    const ctx = requireMembership(request, slug, ['bu_admin']);
+    const [settings] = await withTenant(ctx, (tx) =>
+      tx
+        .select()
+        .from(businessUnitAiSettings)
+        .where(eq(businessUnitAiSettings.businessUnitId, ctx.businessUnitId))
+        .limit(1),
+    );
+    return { settings: { railsPrompt: settings?.railsPrompt ?? '' } };
+  });
+
+  app.put('/api/bu/:slug/ai', async (request) => {
+    const { slug } = slugParam.parse(request.params);
+    const ctx = requireMembership(request, slug, ['bu_admin']);
+    const input = businessUnitAiSettingsSchema.parse(request.body);
+    const [settings] = await withTenant(ctx, (tx) =>
+      tx
+        .insert(businessUnitAiSettings)
+        .values({ businessUnitId: ctx.businessUnitId, railsPrompt: input.railsPrompt })
+        .onConflictDoUpdate({
+          target: businessUnitAiSettings.businessUnitId,
+          set: { railsPrompt: input.railsPrompt, updatedAt: new Date() },
+        })
+        .returning(),
+    );
+    return { settings };
   });
 }

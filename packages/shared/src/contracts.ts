@@ -147,9 +147,66 @@ export const correlateOrderSchema = z.object({
   externalOrderId: z.string().min(1).max(120),
 });
 
-export const shipOrderSchema = z.object({
-  carrier: z.string().min(1).max(80),
-  trackingNumber: z.string().min(1).max(120),
+export const CARRIER_PRESETS = ['USPS', 'FEDEX', 'UPS', 'CUSTOM'] as const;
+export type CarrierPreset = (typeof CARRIER_PRESETS)[number];
+export const carrierPresetSchema = z.enum(CARRIER_PRESETS);
+export const CARRIER_PRESET_LABELS: Record<CarrierPreset, string> = {
+  USPS: 'USPS',
+  FEDEX: 'FedEx',
+  UPS: 'UPS',
+  CUSTOM: 'Custom',
+};
+
+export function carrierPresetFromStored(carrier: string | null | undefined): CarrierPreset {
+  if (carrier === 'USPS' || carrier === 'FEDEX' || carrier === 'UPS') return carrier;
+  return 'CUSTOM';
+}
+
+export function resolveCarrierName(carrier: CarrierPreset, customCarrier?: string): string {
+  if (carrier !== 'CUSTOM') return carrier;
+  const name = customCarrier?.trim() ?? '';
+  if (!name) throw new Error('Enter a custom carrier name');
+  return name;
+}
+
+const carrierFields = {
+  carrier: carrierPresetSchema,
+  customCarrier: z.string().max(80).optional(),
+};
+
+function requireCustomCarrier(
+  value: { carrier: CarrierPreset; customCarrier?: string },
+  ctx: z.RefinementCtx,
+) {
+  if (value.carrier === 'CUSTOM' && !value.customCarrier?.trim()) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'Enter a custom carrier name',
+      path: ['customCarrier'],
+    });
+  }
+}
+
+export const shipOrderSchema = z
+  .object({
+    ...carrierFields,
+    trackingNumber: z.string().min(1).max(120),
+  })
+  .superRefine(requireCustomCarrier);
+
+export const updateShipmentSchema = z
+  .object({
+    ...carrierFields,
+    trackingNumber: z.string().min(1).max(120),
+  })
+  .superRefine(requireCustomCarrier);
+
+export const cancelOrderSchema = z.object({
+  reason: z.string().min(1).max(2000),
+});
+
+export const correctOrderSchema = z.object({
+  note: z.string().min(1).max(2000),
 });
 
 export const ORDER_ISSUE_REASONS = [
@@ -201,6 +258,44 @@ export const submitReviewSchema = z.object({
 export type SubmitReviewInput = z.infer<typeof submitReviewSchema>;
 
 /* ------------------------------------ Auth ------------------------------------ */
+
+export const DEFAULT_AI_DISCLAIMER =
+  'AI can make mistakes. Always check with a licensed physician before starting, stopping, or changing medicines or treatment.';
+
+export const llmCustomHeaderSchema = z.object({
+  name: z.string().min(1).max(80),
+  value: z.string().max(2000),
+});
+
+export const upsertLlmProviderSchema = z.object({
+  name: z.string().min(1).max(80),
+  apiUrl: z.url().max(2000),
+  apiKey: z.string().max(4000).optional(),
+  model: z.string().min(1).max(120),
+  customHeaders: z.array(llmCustomHeaderSchema).max(20).default([]),
+  inputTokenCostPerMillion: z.coerce.number().min(0).max(1_000_000).default(0),
+  outputTokenCostPerMillion: z.coerce.number().min(0).max(1_000_000).default(0),
+  maxOutputTokens: z.coerce.number().int().min(16).max(128_000).default(1024),
+  enabled: z.boolean().default(true),
+  sortOrder: z.coerce.number().int().min(0).max(10_000).optional(),
+});
+
+export const reorderLlmProvidersSchema = z.object({
+  orderedIds: z.array(z.uuid()).min(1),
+});
+
+export const platformAiSettingsSchema = z.object({
+  railsPrompt: z.string().max(20_000),
+  disclaimer: z.string().min(1).max(2000),
+});
+
+export const businessUnitAiSettingsSchema = z.object({
+  railsPrompt: z.string().max(20_000),
+});
+
+export const reportChatSchema = z.object({
+  prompt: z.string().min(1).max(8000),
+});
 
 export const devLoginSchema = z.object({
   email: z.email(),

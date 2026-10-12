@@ -8,6 +8,7 @@ import { devAuthProvider } from '../auth/index.js';
 import {
   businessUnits,
   kits,
+  notifications,
   orders,
   paymentAccounts,
   paymentEvents,
@@ -175,6 +176,11 @@ describe('order workflow: clinician branch', () => {
     }
 
     expect(routedTo).toBe('doctor');
+    const doctorNotes = await withPlatformScope((tx) =>
+      tx.select({ type: notifications.type }).from(notifications).where(eq(notifications.orderId, orderId)),
+    );
+    expect(doctorNotes.map((row) => row.type)).toContain('review_requested');
+    expect(doctorNotes.map((row) => row.type)).not.toContain('results_released');
 
     const queue = await call<{ pending: Array<{ orderId: string }> }>(app, {
       method: 'GET',
@@ -268,6 +274,11 @@ describe('order workflow: direct-to-patient branch', () => {
     }
 
     expect(routedTo).toBe('patient');
+    const patientNotes = await withPlatformScope((tx) =>
+      tx.select({ type: notifications.type }).from(notifications).where(eq(notifications.orderId, orderId)),
+    );
+    expect(patientNotes.map((row) => row.type)).toContain('results_released');
+    expect(patientNotes.map((row) => row.type)).not.toContain('review_requested');
 
     const released = await call<OrderDetail>(app, {
       method: 'GET',
@@ -793,6 +804,116 @@ describe('Stripe webhook boundary', () => {
       payload: '{}',
     });
     expect(response.statusCode).toBe(400);
+  });
+});
+
+describe('fulfillment labeling, tracking, and cancel', () => {
+  it('records only kits that were actually labeled and lets tracking be corrected', async () => {
+    const pkg = await findPackage(false);
+    const { order } = await call<{ order: { id: string } }>(app, {
+      method: 'POST',
+      url: '/api/bu/vitality/patient/orders',
+      token: tokens.patient!,
+      payload: { packageId: pkg.id, shippingAddress: TEST_ADDRESS, shippingMethod: 'ground' },
+      expect: 201,
+    });
+    await call(app, {
+      method: 'POST',
+      url: `/api/bu/vitality/patient/orders/${order.id}/pay`,
+      token: tokens.patient!,
+      payload: { paymentToken: 'tok_test' },
+    });
+
+    const first = await call<{ labeled: number }>(app, {
+      method: 'POST',
+      url: `/api/bu/vitality/fulfillment/orders/${order.id}/label`,
+      token: tokens.fulfillment!,
+    });
+    expect(first.labeled).toBe(pkg.kitCount);
+
+    const second = await call<{ labeled: number }>(app, {
+      method: 'POST',
+      url: `/api/bu/vitality/fulfillment/orders/${order.id}/label`,
+      token: tokens.fulfillment!,
+    });
+    expect(second.labeled).toBe(0);
+
+    await call(app, {
+      method: 'POST',
+      url: `/api/bu/vitality/fulfillment/orders/${order.id}/ship`,
+      token: tokens.fulfillment!,
+      payload: { carrier: 'UPS', trackingNumber: '1Z-ORIGINAL' },
+    });
+
+    const reship = await app.inject({
+      method: 'POST',
+      url: `/api/bu/vitality/fulfillment/orders/${order.id}/ship`,
+      headers: auth(tokens.fulfillment!),
+      payload: { carrier: 'FEDEX', trackingNumber: '1Z-AGAIN' },
+    });
+    expect(reship.statusCode).toBe(400);
+
+    await call(app, {
+      method: 'PATCH',
+      url: `/api/bu/vitality/fulfillment/orders/${order.id}/shipment`,
+      token: tokens.fulfillment!,
+      payload: { carrier: 'USPS', trackingNumber: '9400-CORRECTED' },
+    });
+
+    const detail = await call<{
+      shipments: Array<{ carrier: string; trackingNumber: string }>;
+      events: Array<{ message: string }>;
+    }>(app, {
+      method: 'GET',
+      url: `/api/bu/vitality/fulfillment/orders/${order.id}`,
+      token: tokens.fulfillment!,
+    });
+    expect(detail.shipments[0]).toMatchObject({
+      carrier: 'USPS',
+      trackingNumber: '9400-CORRECTED',
+    });
+    expect(detail.events.some((event) => event.message.includes('Tracking updated'))).toBe(true);
+  });
+
+  it('cancels from fulfillment and rejects cancel after the lab has the sample', async () => {
+    const pkg = await findPackage(false);
+    const { order } = await call<{ order: { id: string } }>(app, {
+      method: 'POST',
+      url: '/api/bu/vitality/patient/orders',
+      token: tokens.patient!,
+      payload: { packageId: pkg.id, shippingAddress: TEST_ADDRESS, shippingMethod: 'ground' },
+      expect: 201,
+    });
+    await call(app, {
+      method: 'POST',
+      url: `/api/bu/vitality/patient/orders/${order.id}/pay`,
+      token: tokens.patient!,
+      payload: { paymentToken: 'tok_test' },
+    });
+
+    await call(app, {
+      method: 'POST',
+      url: `/api/bu/vitality/orders/${order.id}/cancel`,
+      token: tokens.admin!,
+      payload: { reason: 'Patient requested stop' },
+    });
+
+    const cancelled = await call<{ orders: Array<{ id: string; status: string }> }>(app, {
+      method: 'GET',
+      url: '/api/bu/vitality/orders',
+      token: tokens.admin!,
+    });
+    expect(cancelled.orders.find((row) => row.id === order.id)?.status).toBe('cancelled');
+
+    const { orderId, kits } = await driveToLabBench(pkg);
+    const late = await app.inject({
+      method: 'POST',
+      url: `/api/bu/vitality/orders/${orderId}/cancel`,
+      headers: auth(tokens.admin!),
+      payload: { reason: 'Too late' },
+    });
+    expect(late.statusCode).toBe(400);
+    expect(kits.length).toBeGreaterThan(0);
   });
 });
 

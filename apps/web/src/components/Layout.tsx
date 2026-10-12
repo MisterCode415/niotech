@@ -22,6 +22,7 @@ function navFor(role: MembershipRole, slug: string): NavItem[] {
         { to: at('/packages'), label: 'Packages' },
         { to: at('/team'), label: 'Team' },
         { to: at('/payments'), label: 'Payments' },
+        { to: at('/ai'), label: 'Report AI' },
         { to: at('/marketing'), label: 'Marketing page' },
       ];
     case 'patient':

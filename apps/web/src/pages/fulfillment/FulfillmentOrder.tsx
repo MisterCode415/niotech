@@ -1,7 +1,14 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ORDER_ISSUE_REASONS, ORDER_ISSUE_REASON_LABELS } from '@nio/shared';
+import {
+  CARRIER_PRESETS,
+  CARRIER_PRESET_LABELS,
+  ORDER_ISSUE_REASONS,
+  ORDER_ISSUE_REASON_LABELS,
+  carrierPresetFromStored,
+  type CarrierPreset,
+} from '@nio/shared';
 import { api } from '../../lib/api';
 import { date } from '../../lib/format';
 import {
@@ -15,6 +22,12 @@ import {
   type TimelineEvent,
 } from '../../components/ui';
 import { QrSticker } from '../../components/QrSticker';
+
+interface EmailResult {
+  recorded: number;
+  emailed: number;
+  emailFailures: number;
+}
 
 interface Detail {
   order: {
@@ -46,6 +59,53 @@ interface Detail {
   issues: Array<{ id: string; reason: string; detail: string | null; status: string; createdAt: string }>;
 }
 
+function CarrierFields({
+  carrier,
+  customCarrier,
+  tracking,
+  onCarrier,
+  onCustom,
+  onTracking,
+}: {
+  carrier: CarrierPreset;
+  customCarrier: string;
+  tracking: string;
+  onCarrier: (value: CarrierPreset) => void;
+  onCustom: (value: string) => void;
+  onTracking: (value: string) => void;
+}) {
+  return (
+    <div className="field-row">
+      <Field label="Carrier">
+        <select value={carrier} onChange={(event) => onCarrier(event.target.value as CarrierPreset)}>
+          {CARRIER_PRESETS.map((preset) => (
+            <option key={preset} value={preset}>
+              {CARRIER_PRESET_LABELS[preset]}
+            </option>
+          ))}
+        </select>
+      </Field>
+      {carrier === 'CUSTOM' ? (
+        <Field label="Custom carrier">
+          <input
+            value={customCarrier}
+            onChange={(event) => onCustom(event.target.value)}
+            placeholder="Carrier name"
+          />
+        </Field>
+      ) : null}
+      <Field label="Tracking number">
+        <input value={tracking} onChange={(event) => onTracking(event.target.value)} />
+      </Field>
+    </div>
+  );
+}
+
+function emailWarning(email?: EmailResult) {
+  if (!email || email.emailFailures === 0) return '';
+  return 'The order was updated, but the email could not be delivered. Check SMTP or Mailpit.';
+}
+
 export function FulfillmentOrder() {
   const { orderId = '' } = useParams();
   const queryClient = useQueryClient();
@@ -54,11 +114,14 @@ export function FulfillmentOrder() {
   const base = `/api/bu/${slug}/fulfillment/orders/${orderId}`;
 
   const [externalId, setExternalId] = useState('');
-  const [carrier, setCarrier] = useState('UPS');
+  const [carrier, setCarrier] = useState<CarrierPreset>('UPS');
+  const [customCarrier, setCustomCarrier] = useState('');
   const [tracking, setTracking] = useState('');
   const [issueReason, setIssueReason] = useState<string>('address_invalid');
   const [issueDetail, setIssueDetail] = useState('');
+  const [correctionNote, setCorrectionNote] = useState('');
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
 
   const { data, isLoading } = useQuery({
     queryKey: ['fulfillment', 'order', orderId],
@@ -70,39 +133,83 @@ export function FulfillmentOrder() {
     if (data?.order.externalFulfillmentId) setExternalId(data.order.externalFulfillmentId);
   }, [data?.order.externalFulfillmentId]);
 
+  useEffect(() => {
+    const outbound = data?.shipments.find((s) => s.direction === 'outbound_to_patient');
+    if (!outbound) return;
+    const stored = outbound.carrier ?? 'UPS';
+    setCarrier(carrierPresetFromStored(stored));
+    setCustomCarrier(carrierPresetFromStored(stored) === 'CUSTOM' ? stored : '');
+    setTracking(outbound.trackingNumber ?? '');
+  }, [data?.shipments]);
+
   function onError(err: Error) {
+    setNotice('');
     setError(err.message);
   }
-  function onDone() {
+  function onDone(message: string, email?: EmailResult) {
     setError('');
+    setNotice([message, emailWarning(email)].filter(Boolean).join(' '));
     void queryClient.invalidateQueries({ queryKey: ['fulfillment'] });
   }
 
+  const shipBody = () => ({
+    carrier,
+    customCarrier: carrier === 'CUSTOM' ? customCarrier : undefined,
+    trackingNumber: tracking,
+  });
+
   const correlate = useMutation({
     mutationFn: () => api(`${base}/correlate`, { method: 'POST', body: { externalOrderId: externalId } }),
-    onSuccess: onDone,
+    onSuccess: () => onDone('Fulfillment reference saved.'),
     onError,
   });
 
   const label = useMutation({
-    mutationFn: () => api(`${base}/label`, { method: 'POST' }),
-    onSuccess: onDone,
+    mutationFn: () => api<{ labeled: number }>(`${base}/label`, { method: 'POST' }),
+    onSuccess: (result) =>
+      onDone(
+        result.labeled > 0
+          ? `Labels marked applied for ${result.labeled} kit(s).`
+          : 'Every kit is already labeled.',
+      ),
     onError,
   });
 
   const ship = useMutation({
+    mutationFn: () => api<{ email?: EmailResult }>(`${base}/ship`, { method: 'POST', body: shipBody() }),
+    onSuccess: (result) => onDone('Order marked as shipped. The patient was notified.', result.email),
+    onError,
+  });
+
+  const updateShipment = useMutation({
     mutationFn: () =>
-      api(`${base}/ship`, { method: 'POST', body: { carrier, trackingNumber: tracking } }),
-    onSuccess: onDone,
+      api<{ email?: EmailResult }>(`${base}/shipment`, { method: 'PATCH', body: shipBody() }),
+    onSuccess: (result) => onDone('Tracking updated. A correction email was sent.', result.email),
+    onError,
+  });
+
+  const correct = useMutation({
+    mutationFn: () =>
+      api<{ email?: EmailResult }>(`${base}/corrections`, {
+        method: 'POST',
+        body: { note: correctionNote },
+      }),
+    onSuccess: (result) => {
+      setCorrectionNote('');
+      onDone('Correction sent to the patient.', result.email);
+    },
     onError,
   });
 
   const flag = useMutation({
     mutationFn: () =>
-      api(`${base}/issues`, { method: 'POST', body: { reason: issueReason, detail: issueDetail } }),
-    onSuccess: () => {
+      api<{ email?: EmailResult }>(`${base}/issues`, {
+        method: 'POST',
+        body: { reason: issueReason, detail: issueDetail },
+      }),
+    onSuccess: (result) => {
       setIssueDetail('');
-      onDone();
+      onDone('Issue flagged. The patient and business admin were notified.', result.email);
     },
     onError,
   });
@@ -111,6 +218,8 @@ export function FulfillmentOrder() {
 
   const awaitingShipment = data.order.status === 'dispatched_to_fulfillment';
   const outbound = data.shipments.find((s) => s.direction === 'outbound_to_patient');
+  const unlabeled = data.kits.filter((kit) => kit.status === 'awaiting_fulfillment');
+  const canShip = Boolean(tracking) && (carrier !== 'CUSTOM' || customCarrier.trim());
 
   return (
     <>
@@ -119,7 +228,9 @@ export function FulfillmentOrder() {
           <Link to={`/w/${slug}/fulfillment`} className="small muted">
             ← Queue
           </Link>
-          <h1 style={{ marginTop: 8 }}>{data.order.orderNumber} <MockBadge show={data.order.isMock} /></h1>
+          <h1 style={{ marginTop: 8 }}>
+            {data.order.orderNumber} <MockBadge show={data.order.isMock} />
+          </h1>
           <p>
             {data.order.packageName} for {data.order.patientName}
           </p>
@@ -129,6 +240,7 @@ export function FulfillmentOrder() {
 
       <div className="no-print">
         <Alert tone="error">{error}</Alert>
+        <Alert tone="success">{notice}</Alert>
       </div>
 
       <div className="grid cols-2 no-print" style={{ marginBottom: 20 }}>
@@ -177,7 +289,7 @@ export function FulfillmentOrder() {
             Kit labels
           </div>
           <div className="row">
-            <button onClick={() => label.mutate()} disabled={label.isPending}>
+            <button onClick={() => label.mutate()} disabled={label.isPending || unlabeled.length === 0}>
               Mark labels applied
             </button>
             <button className="primary" onClick={() => window.print()}>
@@ -187,8 +299,18 @@ export function FulfillmentOrder() {
         </div>
         <p className="small muted">
           Each sticker carries the scannable code plus both order references, and stays with the kit
-          all the way to the lab.
+          all the way to the lab. Marking labels applied records that the stickers are on the boxes.
         </p>
+        <div className="stack" style={{ marginTop: 12 }}>
+          {data.kits.map((kit) => (
+            <div key={kit.id} className="spread small">
+              <span>
+                Kit {kit.kitNumber} · {kit.testTypeName} · <span className="mono">{kit.serial}</span>
+              </span>
+              <StatusBadge status={kit.status} kind="kit" />
+            </div>
+          ))}
+        </div>
       </div>
 
       <div className="sticker-sheet" style={{ marginBottom: 20 }}>
@@ -208,30 +330,60 @@ export function FulfillmentOrder() {
       <div className="grid cols-2 no-print">
         <div className="stack">
           <div className="card">
-            <div className="card-title">Mark as shipped</div>
-            {awaitingShipment ? (
+            <div className="card-title">{awaitingShipment ? 'Mark as shipped' : 'Update tracking'}</div>
+            {awaitingShipment || outbound ? (
               <>
-                <div className="field-row">
-                  <Field label="Carrier">
-                    <input value={carrier} onChange={(event) => setCarrier(event.target.value)} />
-                  </Field>
-                  <Field label="Tracking number">
-                    <input value={tracking} onChange={(event) => setTracking(event.target.value)} />
-                  </Field>
-                </div>
-                <button
-                  className="primary"
-                  onClick={() => ship.mutate()}
-                  disabled={!tracking || ship.isPending}
-                >
-                  Ship order
-                </button>
+                <CarrierFields
+                  carrier={carrier}
+                  customCarrier={customCarrier}
+                  tracking={tracking}
+                  onCarrier={setCarrier}
+                  onCustom={setCustomCarrier}
+                  onTracking={setTracking}
+                />
+                {awaitingShipment ? (
+                  <button
+                    className="primary"
+                    onClick={() => ship.mutate()}
+                    disabled={!canShip || ship.isPending}
+                  >
+                    Ship order
+                  </button>
+                ) : (
+                  <button
+                    className="primary"
+                    onClick={() => updateShipment.mutate()}
+                    disabled={!canShip || updateShipment.isPending || data.order.status === 'cancelled'}
+                  >
+                    Update tracking
+                  </button>
+                )}
               </>
             ) : (
               <p className="small muted" style={{ margin: 0 }}>
-                This order has already left the warehouse.
+                This order has no outbound shipment yet.
               </p>
             )}
+          </div>
+
+          <div className="card">
+            <div className="card-title">Send a correction</div>
+            <p className="small muted">
+              Emails the patient a follow-up when something about the order changed.
+            </p>
+            <Field label="Note">
+              <textarea
+                value={correctionNote}
+                onChange={(event) => setCorrectionNote(event.target.value)}
+                placeholder="What should the patient know?"
+              />
+            </Field>
+            <button
+              onClick={() => correct.mutate()}
+              disabled={!correctionNote.trim() || correct.isPending}
+            >
+              Send correction
+            </button>
           </div>
 
           <div className="card">

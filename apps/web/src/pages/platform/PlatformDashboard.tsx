@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   MEMBERSHIP_ROLES,
@@ -87,6 +87,9 @@ export function PlatformDashboard() {
             each business unit's own admin.
           </p>
         </div>
+        <Link to="/portal/platform/ai" className="btn">
+          Report AI
+        </Link>
       </div>
 
       <Alert tone={isError ? 'error' : 'success'}>{message}</Alert>

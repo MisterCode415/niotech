@@ -5,7 +5,6 @@ import {
   rollupOrderStatus,
   orderStatusRank,
   ORDER_STATUS_LABELS,
-  workspacePath,
   type ActorRole,
   type OrderStatus,
   type KitStatus,
@@ -26,6 +25,10 @@ import {
 import { badRequest, notFound } from '../lib/errors.js';
 import { draftInterpretation } from './ai.js';
 import type { NotificationIntent } from './notifications.js';
+import {
+  resultsReleasedIntent,
+  reviewRequestedIntent,
+} from './orderNotifications.js';
 
 export interface WorkflowActor {
   businessUnitId: string;
@@ -238,16 +241,18 @@ export async function routeAfterLabCompletion(
     );
 
   const slug = await businessUnitSlug(tx, businessUnitId);
-  const intents: NotificationIntent[] = doctors.map((doctor) => ({
-    businessUnitId,
-    userId: doctor.userId,
-    email: doctor.email,
-    type: 'review_requested',
-    title: `New test result to interpret (${order.orderNumber})`,
-    body: `Lab analysis is complete for order ${order.orderNumber} and is waiting for your review.`,
-    linkPath: workspacePath(slug, 'doctor', `/reviews/${orderId}`),
-    orderId,
-  }));
+  const intents: NotificationIntent[] = doctors.map((doctor) =>
+    reviewRequestedIntent(
+      {
+        businessUnitId,
+        businessUnitSlug: slug,
+        orderId,
+        orderNumber: order.orderNumber,
+        isMock: order.isMock,
+      },
+      { userId: doctor.userId, email: doctor.email },
+    ),
+  );
 
   return { routedTo: 'doctor', intents };
 }
@@ -280,17 +285,18 @@ export async function releaseResults(
 
   if (!patient) return [];
   const slug = await businessUnitSlug(tx, businessUnitId);
+  const released = await loadOrder(tx, businessUnitId, orderId);
 
   return [
-    {
-      businessUnitId,
-      userId: patient.id,
-      email: patient.email,
-      type: 'results_released',
-      title: `Your results for ${patient.orderNumber} are ready`,
-      body: 'Your test results are now available in your dashboard.',
-      linkPath: workspacePath(slug, 'patient', `/orders/${orderId}`),
-      orderId,
-    },
+    resultsReleasedIntent(
+      {
+        businessUnitId,
+        businessUnitSlug: slug,
+        orderId,
+        orderNumber: patient.orderNumber,
+        isMock: released.isMock,
+      },
+      { userId: patient.id, email: patient.email },
+    ),
   ];
 }

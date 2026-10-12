@@ -29,6 +29,8 @@
     "nodemailer": "^7.0.9",
     "postgres": "^3.4.7",
     "stripe": "^22.6.2",
+    "tesseract.js": "^7.0.0",
+    "unpdf": "^1.8.1",
     "zod": "^4.1.13"
   },
   "devDependencies": {

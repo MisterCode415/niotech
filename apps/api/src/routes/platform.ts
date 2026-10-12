@@ -1,13 +1,28 @@
 import type { FastifyInstance } from 'fastify';
 import { eq, sql, desc } from 'drizzle-orm';
 import { z } from 'zod';
-import { createBusinessUnitSchema, updateBusinessUnitStatusSchema } from '@nio/shared';
+import {
+  createBusinessUnitSchema,
+  platformAiSettingsSchema,
+  reorderLlmProvidersSchema,
+  updateBusinessUnitStatusSchema,
+  upsertLlmProviderSchema,
+} from '@nio/shared';
 import { requirePlatformAdmin } from '../auth/context.js';
 import { authProvider } from '../auth/index.js';
 import { withPlatformScope } from '../db/client.js';
-import { businessUnits, memberships, orders, users } from '../db/schema.js';
+import {
+  businessUnits,
+  memberships,
+  orders,
+  platformAiSettings,
+  platformLlmProviders,
+  users,
+} from '../db/schema.js';
 import { conflict, notFound } from '../lib/errors.js';
+import { decryptSecret, encryptSecret, maskSecret } from '../lib/secrets.js';
 import { sendInvitationEmail } from '../services/notifications.js';
+import { loadPlatformAiSettings } from '../services/reportChat.js';
 
 const idParam = z.object({ id: z.uuid() });
 
@@ -137,5 +152,131 @@ export async function platformRoutes(app: FastifyInstance) {
 
       return counts;
     });
+  });
+
+  app.get('/api/platform/ai', async (request) => {
+    requirePlatformAdmin(request);
+    return withPlatformScope(async (tx) => {
+      const settings = await loadPlatformAiSettings(tx);
+      const providers = await tx.select().from(platformLlmProviders).orderBy(platformLlmProviders.sortOrder);
+      return {
+        settings: { railsPrompt: settings.railsPrompt, disclaimer: settings.disclaimer },
+        providers: providers.map((provider) => ({
+          id: provider.id,
+          name: provider.name,
+          apiUrl: provider.apiUrl,
+          apiKeyMasked: maskSecret(decryptSecret(provider.apiKeyCiphertext)),
+          hasApiKey: Boolean(provider.apiKeyCiphertext),
+          model: provider.model,
+          customHeaders: provider.customHeaders,
+          inputTokenCostPerMillion: Number(provider.inputTokenCostPerMillion),
+          outputTokenCostPerMillion: Number(provider.outputTokenCostPerMillion),
+          maxOutputTokens: provider.maxOutputTokens,
+          sortOrder: provider.sortOrder,
+          enabled: provider.enabled,
+        })),
+      };
+    });
+  });
+
+  app.put('/api/platform/ai/settings', async (request) => {
+    requirePlatformAdmin(request);
+    const input = platformAiSettingsSchema.parse(request.body);
+    return withPlatformScope(async (tx) => {
+      const existing = await loadPlatformAiSettings(tx);
+      const [settings] = await tx
+        .update(platformAiSettings)
+        .set({
+          railsPrompt: input.railsPrompt,
+          disclaimer: input.disclaimer,
+          updatedAt: new Date(),
+        })
+        .where(eq(platformAiSettings.id, existing.id))
+        .returning();
+      return { settings };
+    });
+  });
+
+  app.post('/api/platform/ai/providers', async (request, reply) => {
+    requirePlatformAdmin(request);
+    const input = upsertLlmProviderSchema.parse(request.body);
+    const apiKey = input.apiKey?.trim();
+    if (!apiKey) throw conflict('An API key is required', 'API_KEY_REQUIRED');
+    const created = await withPlatformScope(async (tx) => {
+      const existing = await tx.select({ sortOrder: platformLlmProviders.sortOrder }).from(platformLlmProviders);
+      const sortOrder = input.sortOrder ?? (existing.length === 0 ? 0 : Math.max(...existing.map((r) => r.sortOrder)) + 1);
+      const [row] = await tx
+        .insert(platformLlmProviders)
+        .values({
+          name: input.name,
+          apiUrl: input.apiUrl,
+          apiKeyCiphertext: encryptSecret(apiKey),
+          model: input.model,
+          customHeaders: input.customHeaders,
+          inputTokenCostPerMillion: String(input.inputTokenCostPerMillion),
+          outputTokenCostPerMillion: String(input.outputTokenCostPerMillion),
+          maxOutputTokens: input.maxOutputTokens,
+          enabled: input.enabled,
+          sortOrder,
+        })
+        .returning({ id: platformLlmProviders.id });
+      return row;
+    });
+    return reply.status(201).send(created);
+  });
+
+  app.put('/api/platform/ai/providers/order', async (request) => {
+    requirePlatformAdmin(request);
+    const input = reorderLlmProvidersSchema.parse(request.body);
+    await withPlatformScope(async (tx) => {
+      for (const [index, id] of input.orderedIds.entries()) {
+        await tx
+          .update(platformLlmProviders)
+          .set({ sortOrder: index, updatedAt: new Date() })
+          .where(eq(platformLlmProviders.id, id));
+      }
+    });
+    return { ok: true };
+  });
+
+  app.put('/api/platform/ai/providers/:id', async (request) => {
+    requirePlatformAdmin(request);
+    const { id } = idParam.parse(request.params);
+    const input = upsertLlmProviderSchema.parse(request.body);
+    return withPlatformScope(async (tx) => {
+      const [existing] = await tx
+        .select()
+        .from(platformLlmProviders)
+        .where(eq(platformLlmProviders.id, id))
+        .limit(1);
+      if (!existing) throw notFound('Provider not found');
+      const [updated] = await tx
+        .update(platformLlmProviders)
+        .set({
+          name: input.name,
+          apiUrl: input.apiUrl,
+          model: input.model,
+          customHeaders: input.customHeaders,
+          inputTokenCostPerMillion: String(input.inputTokenCostPerMillion),
+          outputTokenCostPerMillion: String(input.outputTokenCostPerMillion),
+          maxOutputTokens: input.maxOutputTokens,
+          enabled: input.enabled,
+          updatedAt: new Date(),
+          ...(input.apiKey?.trim() ? { apiKeyCiphertext: encryptSecret(input.apiKey.trim()) } : {}),
+        })
+        .where(eq(platformLlmProviders.id, id))
+        .returning({ id: platformLlmProviders.id });
+      return updated;
+    });
+  });
+
+  app.delete('/api/platform/ai/providers/:id', async (request) => {
+    requirePlatformAdmin(request);
+    const { id } = idParam.parse(request.params);
+    const deleted = await withPlatformScope((tx) =>
+      tx.delete(platformLlmProviders).where(eq(platformLlmProviders.id, id)).returning({ id: platformLlmProviders.id }),
+    );
+    if (deleted.length === 0) throw notFound('Provider not found');
+    return { deleted: true };
   });
 }

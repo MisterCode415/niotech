@@ -6,3 +6,4 @@ allowBuilds:
   # Ships a prebuilt index.js; its postinstall is not needed for the package to work.
   browser-tabs-lock: false
   esbuild: true
+  tesseract.js: set this to true or false

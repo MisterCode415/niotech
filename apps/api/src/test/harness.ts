@@ -27,7 +27,7 @@ export function auth(token: string) {
 }
 
 interface CallOptions {
-  method: 'GET' | 'POST' | 'PUT' | 'PATCH';
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   url: string;
   token: string;
   payload?: unknown;
@@ -80,3 +80,30 @@ export function multipartBody(
 export const SAMPLE_PDF = Buffer.from(
   '%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n',
 );
+
+/** Digital PDF with extractable text for the report-discussion cache. */
+function buildTextPdf(line: string): Buffer {
+  const content = `BT /F1 12 Tf 72 720 Td (${line}) Tj ET`;
+  const objects = [
+    '1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj\n',
+    '2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1 >>endobj\n',
+    '3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources<< /Font<< /F1 5 0 R >> >> >>endobj\n',
+    `4 0 obj<< /Length ${Buffer.byteLength(content)} >>stream\n${content}\nendstream\nendobj\n`,
+    '5 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>endobj\n',
+  ];
+  let body = '%PDF-1.4\n';
+  const offsets = [0];
+  for (const object of objects) {
+    offsets.push(Buffer.byteLength(body));
+    body += object;
+  }
+  const xrefStart = Buffer.byteLength(body);
+  let xref = 'xref\n0 6\n0000000000 65535 f \n';
+  for (let index = 1; index <= 5; index += 1) {
+    xref += `${String(offsets[index]).padStart(10, '0')} 00000 n \n`;
+  }
+  body += `${xref}trailer<< /Size 6 /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF\n`;
+  return Buffer.from(body);
+}
+
+export const TEXT_PDF = buildTextPdf('Glucose 92 mg/dL reference 70-99');

@@ -13,6 +13,14 @@ export interface NotificationIntent {
   body: string;
   linkPath?: string;
   orderId?: string;
+  /** Simulation / mock orders write the in-app row but never hit SMTP. */
+  skipEmail?: boolean;
+}
+
+export interface DispatchResult {
+  recorded: number;
+  emailed: number;
+  emailFailures: number;
 }
 
 /**
@@ -111,7 +119,9 @@ export async function sendInvitationEmail(input: {
  * being down must never roll back a lab result or a doctor's decision. In-app rows are written
  * first so the bell is correct even if SMTP fails.
  */
-export async function dispatchNotifications(intents: NotificationIntent[]): Promise<void> {
+export async function dispatchNotifications(intents: NotificationIntent[]): Promise<DispatchResult> {
+  const result: DispatchResult = { recorded: 0, emailed: 0, emailFailures: 0 };
+
   for (const intent of intents) {
     let notificationId: string | null = null;
 
@@ -131,10 +141,13 @@ export async function dispatchNotifications(intents: NotificationIntent[]): Prom
           .returning({ id: notifications.id }),
       );
       notificationId = row?.id ?? null;
+      if (notificationId) result.recorded += 1;
     } catch (error) {
       console.error('Failed to record notification', intent.type, error);
       continue;
     }
+
+    if (intent.skipEmail) continue;
 
     try {
       await transport.sendMail({
@@ -143,6 +156,7 @@ export async function dispatchNotifications(intents: NotificationIntent[]): Prom
         subject: intent.title,
         text: `${intent.body}\n\n${intent.linkPath ? `${env.WEB_ORIGIN}${intent.linkPath}` : ''}`.trim(),
       });
+      result.emailed += 1;
 
       if (notificationId) {
         await withTenant(intent.businessUnitId, (tx) =>
@@ -153,8 +167,11 @@ export async function dispatchNotifications(intents: NotificationIntent[]): Prom
         );
       }
     } catch (error) {
+      result.emailFailures += 1;
       // Mailpit may not be running; the in-app notification already landed.
-      console.warn(`Email delivery failed for ${intent.email}:`, (error as Error).message);
+      console.warn('Email delivery failed', intent.type, (error as Error).message);
     }
   }
+
+  return result;
 }

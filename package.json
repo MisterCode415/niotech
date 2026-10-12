@@ -21,6 +21,10 @@
     "db:migrate": "pnpm -F @nio/api db:migrate",
     "db:seed": "pnpm -F @nio/api db:seed"
   },
+  "pnpm": {
+    "neverBuiltDependencies": ["tesseract.js"],
+    "ignoredBuiltDependencies": ["tesseract.js"]
+  },
   "devDependencies": {
     "@eslint/js": "^9.39.2",
     "@types/node": "^22.19.2",

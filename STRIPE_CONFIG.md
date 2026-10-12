@@ -87,6 +87,22 @@ stripe listen --forward-connect-to localhost:4000/api/webhooks/stripe
 The CLI prints a temporary `whsec_...` value. Use that as the local
 `STRIPE_WEBHOOK_SECRET` while the listener is running.
 
+## Where sandbox charges appear
+
+Checkout creates a **direct charge on the connected Standard account**. In the Stripe
+Dashboard:
+
+1. Confirm the toggle is **Test mode** when `STRIPE_SECRET_KEY` starts with `sk_test_`.
+2. Open **Connect → Accounts → the connected `acct_...`**, not the platform account's
+   Payments list. The business-unit Payments page links there.
+3. If `PAYMENT_PROVIDER=mock` (the default in `.env.example`), no Stripe objects are
+   created at all.
+
+Webhooks without `event.account` are ignored. The destination must listen to events
+from connected accounts. If Checkout completed in Stripe but Qinio is still
+`pending_payment`, the webhook never arrived — use the Reconcile button or fix the
+listener secret.
+
 ## Sandbox test cards
 
 ```text

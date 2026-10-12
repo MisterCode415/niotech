@@ -3,11 +3,13 @@ import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   correlateOrderSchema,
+  correctOrderSchema,
   flagOrderIssueSchema,
   fulfillmentAccountSchema,
+  resolveCarrierName,
   shipOrderSchema,
+  updateShipmentSchema,
   ORDER_ISSUE_REASON_LABELS,
-  workspacePath,
 } from '@nio/shared';
 import { requireMembership } from '../auth/context.js';
 import { env } from '../env.js';
@@ -24,7 +26,14 @@ import {
 } from '../db/schema.js';
 import { badRequest, notFound } from '../lib/errors.js';
 import { getOrderDetail } from '../services/orderQueries.js';
-import { dispatchNotifications, type NotificationIntent } from '../services/notifications.js';
+import { dispatchNotifications } from '../services/notifications.js';
+import {
+  activeMembersByRole,
+  kitShippedIntent,
+  orderCorrectedIntent,
+  shipmentIssueIntent,
+  trackingUpdatedIntent,
+} from '../services/orderNotifications.js';
 import { recordEvent, setKitStatus, syncOrderFromKits } from '../services/orderWorkflow.js';
 
 const slugParam = z.object({ slug: z.string() });
@@ -152,19 +161,22 @@ export async function fulfillmentRoutes(app: FastifyInstance) {
         .where(eq(kits.orderId, orderId));
       if (rows.length === 0) throw notFound('Order has no kits');
 
-      for (const kit of rows.filter((k) => k.status === 'awaiting_fulfillment')) {
+      const pending = rows.filter((k) => k.status === 'awaiting_fulfillment');
+      for (const kit of pending) {
         await setKitStatus(tx, actor, kit.id, 'labeled');
       }
 
-      await recordEvent(tx, {
-        businessUnitId: ctx.businessUnitId,
-        orderId,
-        actorUserId: ctx.userId,
-        actorRole: 'fulfillment',
-        message: `QR labels printed for ${rows.length} kit(s)`,
-      });
+      if (pending.length > 0) {
+        await recordEvent(tx, {
+          businessUnitId: ctx.businessUnitId,
+          orderId,
+          actorUserId: ctx.userId,
+          actorRole: 'fulfillment',
+          message: `QR labels applied to ${pending.length} kit(s)`,
+        });
+      }
 
-      return { labeled: rows.length };
+      return { labeled: pending.length };
     });
   });
 
@@ -173,6 +185,7 @@ export async function fulfillmentRoutes(app: FastifyInstance) {
     const ctx = requireMembership(request, slug, ['fulfillment']);
     const input = shipOrderSchema.parse(request.body);
 
+    const carrier = resolveCarrierName(input.carrier, input.customCarrier);
     const intents = await withTenant(ctx, async (tx) => {
       const detail = await getOrderDetail(tx, ctx.businessUnitId, orderId);
       if (detail.order.status !== 'dispatched_to_fulfillment') {
@@ -193,7 +206,7 @@ export async function fulfillmentRoutes(app: FastifyInstance) {
         businessUnitId: ctx.businessUnitId,
         orderId,
         direction: 'outbound_to_patient',
-        carrier: input.carrier,
+        carrier,
         trackingNumber: input.trackingNumber,
         toAddress: detail.order.shippingAddress,
         shippedAt: new Date(),
@@ -204,11 +217,11 @@ export async function fulfillmentRoutes(app: FastifyInstance) {
         orderId,
         actorUserId: ctx.userId,
         actorRole: 'fulfillment',
-        message: `Shipped via ${input.carrier} (${input.trackingNumber})`,
-        metadata: { carrier: input.carrier, trackingNumber: input.trackingNumber },
+        message: `Shipped via ${carrier} (${input.trackingNumber})`,
+        metadata: { carrier, trackingNumber: input.trackingNumber },
       });
 
-      await syncOrderFromKits(tx, actor, orderId, `Kit shipped via ${input.carrier}`);
+      await syncOrderFromKits(tx, actor, orderId, `Kit shipped via ${carrier}`);
 
       // Record the cost so it can be settled in a batch rather than per order.
       const [account] = await tx
@@ -229,24 +242,111 @@ export async function fulfillmentRoutes(app: FastifyInstance) {
         })
         .onConflictDoNothing();
 
-      const notificationIntents: NotificationIntent[] = [
-        {
-          businessUnitId: ctx.businessUnitId,
-          userId: detail.order.patientId,
-          email: detail.order.patientEmail,
-          type: 'kit_shipped',
-          title: `Your kit for ${detail.order.orderNumber} has shipped`,
-          body: `Tracking ${input.trackingNumber} with ${input.carrier}. Scan the QR code on the kit when it arrives.`,
-          linkPath: workspacePath(ctx.businessUnitSlug, 'patient', `/orders/${orderId}`),
-          orderId,
-        },
+      return [
+        kitShippedIntent(
+          {
+            businessUnitId: ctx.businessUnitId,
+            businessUnitSlug: ctx.businessUnitSlug,
+            orderId,
+            orderNumber: detail.order.orderNumber,
+            isMock: detail.order.isMock,
+          },
+          { userId: detail.order.patientId, email: detail.order.patientEmail },
+          carrier,
+          input.trackingNumber,
+        ),
       ];
-
-      return notificationIntents;
     });
 
-    await dispatchNotifications(intents);
-    return { status: 'kit_shipped' };
+    const email = await dispatchNotifications(intents);
+    return { status: 'kit_shipped', email };
+  });
+
+  app.patch('/api/bu/:slug/fulfillment/orders/:orderId/shipment', async (request) => {
+    const { slug, orderId } = orderParam.parse(request.params);
+    const ctx = requireMembership(request, slug, ['fulfillment']);
+    const input = updateShipmentSchema.parse(request.body);
+    const carrier = resolveCarrierName(input.carrier, input.customCarrier);
+
+    const intents = await withTenant(ctx, async (tx) => {
+      const detail = await getOrderDetail(tx, ctx.businessUnitId, orderId);
+      if (detail.order.status === 'cancelled') {
+        throw badRequest('A cancelled order cannot have its tracking updated');
+      }
+      if (detail.order.status === 'pending_payment' || detail.order.status === 'paid') {
+        throw badRequest('This order has not shipped yet');
+      }
+
+      const outbound = detail.shipments.find((s) => s.direction === 'outbound_to_patient');
+      if (!outbound) throw badRequest('This order has no outbound shipment to update');
+
+      const previous = { carrier: outbound.carrier, trackingNumber: outbound.trackingNumber };
+      await tx
+        .update(shipments)
+        .set({ carrier, trackingNumber: input.trackingNumber })
+        .where(eq(shipments.id, outbound.id));
+
+      await recordEvent(tx, {
+        businessUnitId: ctx.businessUnitId,
+        orderId,
+        actorUserId: ctx.userId,
+        actorRole: 'fulfillment',
+        message: `Tracking updated to ${carrier} (${input.trackingNumber})`,
+        metadata: { previous, carrier, trackingNumber: input.trackingNumber },
+      });
+
+      return [
+        trackingUpdatedIntent(
+          {
+            businessUnitId: ctx.businessUnitId,
+            businessUnitSlug: ctx.businessUnitSlug,
+            orderId,
+            orderNumber: detail.order.orderNumber,
+            isMock: detail.order.isMock,
+          },
+          { userId: detail.order.patientId, email: detail.order.patientEmail },
+          carrier,
+          input.trackingNumber,
+        ),
+      ];
+    });
+
+    const email = await dispatchNotifications(intents);
+    return { carrier, trackingNumber: input.trackingNumber, email };
+  });
+
+  app.post('/api/bu/:slug/fulfillment/orders/:orderId/corrections', async (request) => {
+    const { slug, orderId } = orderParam.parse(request.params);
+    const ctx = requireMembership(request, slug, ['fulfillment']);
+    const input = correctOrderSchema.parse(request.body);
+
+    const intents = await withTenant(ctx, async (tx) => {
+      const detail = await getOrderDetail(tx, ctx.businessUnitId, orderId);
+      await recordEvent(tx, {
+        businessUnitId: ctx.businessUnitId,
+        orderId,
+        actorUserId: ctx.userId,
+        actorRole: 'fulfillment',
+        message: `Correction sent to patient: ${input.note}`,
+        metadata: { reason: 'order_corrected', note: input.note },
+      });
+      return [
+        orderCorrectedIntent(
+          {
+            businessUnitId: ctx.businessUnitId,
+            businessUnitSlug: ctx.businessUnitSlug,
+            orderId,
+            orderNumber: detail.order.orderNumber,
+            isMock: detail.order.isMock,
+          },
+          { userId: detail.order.patientId, email: detail.order.patientEmail },
+          input.note,
+        ),
+      ];
+    });
+
+    const email = await dispatchNotifications(intents);
+    return { email };
   });
 
   app.post('/api/bu/:slug/fulfillment/orders/:orderId/issues', async (request, reply) => {
@@ -254,7 +354,8 @@ export async function fulfillmentRoutes(app: FastifyInstance) {
     const ctx = requireMembership(request, slug, ['fulfillment']);
     const input = flagOrderIssueSchema.parse(request.body);
 
-    const issue = await withTenant(ctx, async (tx) => {
+    const { issue, intents } = await withTenant(ctx, async (tx) => {
+      const detail = await getOrderDetail(tx, ctx.businessUnitId, orderId);
       const [row] = await tx
         .insert(orderIssues)
         .values({
@@ -275,10 +376,33 @@ export async function fulfillmentRoutes(app: FastifyInstance) {
         metadata: { reason: input.reason, detail: input.detail },
       });
 
-      return row!;
+      const notifyCtx = {
+        businessUnitId: ctx.businessUnitId,
+        businessUnitSlug: ctx.businessUnitSlug,
+        orderId,
+        orderNumber: detail.order.orderNumber,
+        isMock: detail.order.isMock,
+      };
+      const admins = await activeMembersByRole(tx, ctx.businessUnitId, 'bu_admin');
+      return {
+        issue: row!,
+        intents: [
+          shipmentIssueIntent(
+            notifyCtx,
+            { userId: detail.order.patientId, email: detail.order.patientEmail },
+            'patient',
+            input.reason,
+            input.detail,
+          ),
+          ...admins.map((admin) =>
+            shipmentIssueIntent(notifyCtx, admin, 'bu_admin', input.reason, input.detail),
+          ),
+        ],
+      };
     });
 
-    return reply.status(201).send({ issue });
+    const email = await dispatchNotifications(intents);
+    return reply.status(201).send({ issue, email });
   });
 
   /* ------------------------------- Reconciliation ------------------------------- */

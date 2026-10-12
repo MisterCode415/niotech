@@ -66,6 +66,10 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((value) => value === 'true'),
+  /**
+   * Encrypts LLM provider API keys at rest. Production must not use the committed default.
+   */
+  APP_ENCRYPTION_KEY: z.string().default('dev-only-encryption-key-change-me'),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -136,6 +140,11 @@ function assertDeployableConfig(): void {
     problems.push(
       'SMTP_HOST is still the placeholder. Point it at a real relay, or set SMTP_HOST=mailpit and run ' +
         'with --profile mailpit to capture mail instead of sending it.',
+    );
+  }
+  if (env.APP_ENCRYPTION_KEY === 'dev-only-encryption-key-change-me') {
+    problems.push(
+      'APP_ENCRYPTION_KEY is still the committed default. Generate one with: openssl rand -hex 32',
     );
   }
   if (env.PAYMENT_PROVIDER === 'stripe') {

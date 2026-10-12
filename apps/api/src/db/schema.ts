@@ -8,6 +8,7 @@ import {
   boolean,
   timestamp,
   jsonb,
+  numeric,
   index,
   uniqueIndex,
   type AnyPgColumn,
@@ -70,6 +71,8 @@ export const catalogSyncStatusEnum = pgEnum('catalog_sync_status', [
   'synced',
   'failed',
 ]);
+export const fileExtractionMethodEnum = pgEnum('file_extraction_method', ['pdf_text', 'ocr']);
+export const reportMessageRoleEnum = pgEnum('report_message_role', ['user', 'assistant']);
 
 /* --------------------------------- Platform --------------------------------- */
 
@@ -548,6 +551,29 @@ export const files = pgTable(
   (t) => [uniqueIndex('files_storage_key_key').on(t.storageKey)],
 );
 
+/** Cached text of a lab PDF so later chat turns do not re-run OCR. */
+export const fileExtractions = pgTable(
+  'file_extractions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    businessUnitId: uuid('business_unit_id')
+      .notNull()
+      .references(() => businessUnits.id, { onDelete: 'cascade' }),
+    fileId: uuid('file_id')
+      .notNull()
+      .references(() => files.id, { onDelete: 'cascade' }),
+    extractedText: text('extracted_text').notNull(),
+    method: fileExtractionMethodEnum('method').notNull(),
+    pageCount: integer('page_count').notNull().default(1),
+    charCount: integer('char_count').notNull().default(0),
+    extractedAt: timestamp('extracted_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('file_extractions_file_key').on(t.fileId),
+    index('file_extractions_bu_idx').on(t.businessUnitId),
+  ],
+);
+
 export const labResults = pgTable(
   'lab_results',
   {
@@ -671,6 +697,122 @@ export const fulfillmentCharges = pgTable(
     index('fulfillment_charges_user_idx').on(t.businessUnitId, t.fulfillmentUserId),
     index('fulfillment_charges_batch_idx').on(t.businessUnitId, t.status),
   ],
+);
+
+/* ------------------------------------ AI ------------------------------------ */
+
+export const platformAiSettings = pgTable('platform_ai_settings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  railsPrompt: text('rails_prompt').notNull().default(''),
+  disclaimer: text('disclaimer').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const platformLlmProviders = pgTable(
+  'platform_llm_providers',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: text('name').notNull(),
+    apiUrl: text('api_url').notNull(),
+    apiKeyCiphertext: text('api_key_ciphertext').notNull().default(''),
+    model: text('model').notNull(),
+    customHeaders: jsonb('custom_headers').$type<Array<{ name: string; value: string }>>().notNull().default([]),
+    inputTokenCostPerMillion: numeric('input_token_cost_per_million', {
+      precision: 12,
+      scale: 6,
+    })
+      .notNull()
+      .default('0'),
+    outputTokenCostPerMillion: numeric('output_token_cost_per_million', {
+      precision: 12,
+      scale: 6,
+    })
+      .notNull()
+      .default('0'),
+    maxOutputTokens: integer('max_output_tokens').notNull().default(1024),
+    sortOrder: integer('sort_order').notNull().default(0),
+    enabled: boolean('enabled').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('platform_llm_providers_sort_idx').on(t.sortOrder)],
+);
+
+export const businessUnitAiSettings = pgTable(
+  'business_unit_ai_settings',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    businessUnitId: uuid('business_unit_id')
+      .notNull()
+      .references(() => businessUnits.id, { onDelete: 'cascade' }),
+    railsPrompt: text('rails_prompt').notNull().default(''),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('business_unit_ai_settings_bu_key').on(t.businessUnitId)],
+);
+
+export const reportConversations = pgTable(
+  'report_conversations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    businessUnitId: uuid('business_unit_id')
+      .notNull()
+      .references(() => businessUnits.id, { onDelete: 'cascade' }),
+    orderId: uuid('order_id')
+      .notNull()
+      .references(() => orders.id, { onDelete: 'cascade' }),
+    patientUserId: uuid('patient_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('report_conversations_order_key').on(t.orderId),
+    index('report_conversations_patient_idx').on(t.patientUserId),
+  ],
+);
+
+export const reportMessages = pgTable(
+  'report_messages',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    businessUnitId: uuid('business_unit_id')
+      .notNull()
+      .references(() => businessUnits.id, { onDelete: 'cascade' }),
+    conversationId: uuid('conversation_id')
+      .notNull()
+      .references(() => reportConversations.id, { onDelete: 'cascade' }),
+    role: reportMessageRoleEnum('role').notNull(),
+    content: text('content').notNull(),
+    providerId: uuid('provider_id').references(() => platformLlmProviders.id, {
+      onDelete: 'set null',
+    }),
+    inputTokens: integer('input_tokens').notNull().default(0),
+    outputTokens: integer('output_tokens').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('report_messages_conversation_idx').on(t.conversationId, t.createdAt)],
+);
+
+export const patientLlmUsage = pgTable(
+  'patient_llm_usage',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    businessUnitId: uuid('business_unit_id')
+      .notNull()
+      .references(() => businessUnits.id, { onDelete: 'cascade' }),
+    patientUserId: uuid('patient_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    inputTokens: integer('input_tokens').notNull().default(0),
+    outputTokens: integer('output_tokens').notNull().default(0),
+    estimatedCostUsd: numeric('estimated_cost_usd', { precision: 14, scale: 8 })
+      .notNull()
+      .default('0'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('patient_llm_usage_patient_key').on(t.businessUnitId, t.patientUserId)],
 );
 
 /* --------------------------------- Relations --------------------------------- */

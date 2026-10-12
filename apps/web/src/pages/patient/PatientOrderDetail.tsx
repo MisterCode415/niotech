@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { DEFAULT_AI_DISCLAIMER } from '@nio/shared';
 import { api, fetchBlobUrl } from '../../lib/api';
 import { money, date, bytes } from '../../lib/format';
 import {
@@ -11,6 +12,7 @@ import {
   Timeline,
   AddressBlock,
   Alert,
+  Field,
   type TimelineEvent,
 } from '../../components/ui';
 
@@ -64,6 +66,39 @@ export function PatientOrderDetail() {
     queryKey: ['patient', 'order', orderId],
     queryFn: () => api<Detail>(base),
     enabled: Boolean(slug),
+  });
+
+  const [prompt, setPrompt] = useState('');
+  const [chatError, setChatError] = useState('');
+
+  const conversation = useQuery({
+    queryKey: ['patient', 'conversation', orderId],
+    queryFn: () =>
+      api<{
+        enabled: boolean;
+        disclaimer: string;
+        messages: Array<{ id: string; role: 'user' | 'assistant'; content: string }>;
+      }>(`${base}/conversation`),
+    enabled: Boolean(slug) && data?.order.status === 'results_released',
+  });
+
+  useEffect(() => {
+    if (!data || data.order.status !== 'results_released') return;
+    for (const result of data.results) {
+      if (!result.fileId) continue;
+      void api(`${base}/results/${result.fileId}/text`).catch(() => undefined);
+    }
+  }, [data, base]);
+
+  const ask = useMutation({
+    mutationFn: () =>
+      api(`${base}/conversation`, { method: 'POST', body: { prompt, reportText: 'client-ignored' } }),
+    onSuccess: () => {
+      setPrompt('');
+      setChatError('');
+      void queryClient.invalidateQueries({ queryKey: ['patient', 'conversation', orderId] });
+    },
+    onError: (err: Error) => setChatError(err.message),
   });
 
   const act = useMutation({
@@ -226,6 +261,50 @@ export function PatientOrderDetail() {
             <div className="card-title">Progress</div>
             <Timeline events={data.events} />
           </div>
+
+          {released ? (
+            <div className="card">
+              <div className="card-title">Discuss your results</div>
+              {!conversation.data?.enabled ? (
+                <p className="small muted" style={{ margin: 0 }}>
+                  Report discussion is not configured yet.
+                </p>
+              ) : (
+                <>
+                  <div className="stack" style={{ marginBottom: 12 }}>
+                    {(conversation.data.messages ?? []).map((message) => (
+                      <div key={message.id}>
+                        <strong className="small">{message.role === 'user' ? 'You' : 'Assistant'}</strong>
+                        <p className="small" style={{ whiteSpace: 'pre-wrap', margin: '4px 0 0' }}>
+                          {message.content}
+                        </p>
+                        {message.role === 'assistant' ? (
+                          <p className="small muted" style={{ marginTop: 6 }}>
+                            {conversation.data.disclaimer || DEFAULT_AI_DISCLAIMER}
+                          </p>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                  <Alert tone="error">{chatError}</Alert>
+                  <Field label="Ask about this report">
+                    <textarea
+                      value={prompt}
+                      onChange={(event) => setPrompt(event.target.value)}
+                      placeholder="What does this marker mean?"
+                    />
+                  </Field>
+                  <button
+                    className="primary"
+                    onClick={() => ask.mutate()}
+                    disabled={!prompt.trim() || ask.isPending}
+                  >
+                    {ask.isPending ? 'Thinking…' : 'Send'}
+                  </button>
+                </>
+              )}
+            </div>
+          ) : null}
         </div>
       </div>
 
