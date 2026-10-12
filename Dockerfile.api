@@ -6,7 +6,7 @@ ENV PATH=$PNPM_HOME:$PATH
 
 FROM base AS deps
 # Manifests are copied before sources so dependency installation stays cached across code changes.
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 COPY apps/api/package.json ./apps/api/
 COPY packages/shared/package.json ./packages/shared/
 RUN pnpm install --frozen-lockfile --filter @nio/api --filter @nio/shared
