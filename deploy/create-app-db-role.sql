@@ -42,3 +42,14 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
   GRANT USAGE, SELECT ON SEQUENCES TO nio_app;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
   GRANT EXECUTE ON FUNCTIONS TO nio_app;
+
+-- The blanket grants above would hand back the privileges migration 0012 withheld. The audit trail
+-- is append-only for the application role, so withdraw them again; this matters after restoring a
+-- database, when this file is re-run against a fresh server.
+DO $$
+BEGIN
+  IF to_regclass('public.phi_access_events') IS NOT NULL THEN
+    REVOKE UPDATE, DELETE, TRUNCATE ON public.phi_access_events FROM nio_app;
+  END IF;
+END
+$$;

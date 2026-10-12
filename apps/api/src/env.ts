@@ -36,8 +36,12 @@ const envSchema = z.object({
 
   PLATFORM_ADMIN_EMAIL: z.string().default('admin@niotech.test'),
 
-  STORAGE_DRIVER: z.enum(['local']).default('local'),
+  /** `azure_blob` is required in production; `local` is for development and tests. */
+  STORAGE_DRIVER: z.enum(['local', 'azure_blob']).default('local'),
   STORAGE_LOCAL_PATH: z.string().default('./storage'),
+  /** e.g. https://niophiabc123.blob.core.windows.net. Auth is the VM's managed identity. */
+  AZURE_STORAGE_ACCOUNT_URL: z.string().url().optional(),
+  AZURE_STORAGE_CONTAINER: z.string().default('phi-files'),
 
   SMTP_HOST: z.string().default('localhost'),
   SMTP_PORT: z.coerce.number().default(1025),
@@ -111,6 +115,22 @@ function databaseIsRemote(url: string): boolean {
  * Configuration mistakes that are harmless locally become serious once the app is reachable, so
  * they are refused at boot rather than logged as warnings. Failing to start is the safe outcome.
  */
+/** What is wrong with the storage settings for a production boot. Pure so tests can call it. */
+export function productionStorageProblems(config: {
+  STORAGE_DRIVER: 'local' | 'azure_blob';
+  AZURE_STORAGE_ACCOUNT_URL?: string | undefined;
+}): string[] {
+  if (config.STORAGE_DRIVER === 'local') {
+    return [
+      'STORAGE_DRIVER=local keeps lab PDFs on the VM disk with no versioning, backup, or off-host ' +
+        'copy. Run deploy/azure-storage.sh and set STORAGE_DRIVER=azure_blob.',
+    ];
+  }
+  return config.AZURE_STORAGE_ACCOUNT_URL
+    ? []
+    : ['STORAGE_DRIVER=azure_blob requires AZURE_STORAGE_ACCOUNT_URL.'];
+}
+
 function assertDeployableConfig(): void {
   if (env.NODE_ENV !== 'production') return;
 
@@ -156,6 +176,7 @@ function assertDeployableConfig(): void {
       'APP_ENCRYPTION_KEY is still the committed default. Generate one with: openssl rand -hex 32',
     );
   }
+  problems.push(...productionStorageProblems(env));
   if (env.PAYMENT_PROVIDER === 'stripe') {
     for (const key of [
       'STRIPE_SECRET_KEY',

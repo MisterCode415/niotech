@@ -14,9 +14,12 @@
     "db:migrate": "tsx src/db/migrate.ts",
     "db:seed": "tsx src/db/seed.ts",
     "db:bootstrap": "tsx src/db/seedPlatformAdmin.ts",
+    "storage:migrate": "tsx src/db/migrateStorage.ts",
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
+    "@azure/identity": "^4.13.3",
+    "@azure/storage-blob": "^12.34.0",
     "@fastify/cors": "^11.1.0",
     "@fastify/multipart": "^9.2.1",
     "@fastify/rate-limit": "^11.2.0",

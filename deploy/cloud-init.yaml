@@ -25,6 +25,9 @@ write_files:
       apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
       usermod -aG docker azureuser
 
+      # Used by deploy/db-dump.sh (monthly database dump, authenticated with the VM identity).
+      curl -fsSL https://aka.ms/InstallAzureCLIDeb | bash
+
       if [ ! -f /swapfile ]; then
         fallocate -l 2G /swapfile
         chmod 600 /swapfile

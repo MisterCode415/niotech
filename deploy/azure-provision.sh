@@ -26,6 +26,19 @@ PG_STORAGE_GB="${PG_STORAGE_GB:-32}"
 PG_VERSION="${PG_VERSION:-17}"              # drop to 16 if the region has not got 17 yet
 PG_ADMIN="${PG_ADMIN:-nioadmin}"
 PG_DATABASE="${PG_DATABASE:-nio}"
+# Point-in-time restore window (days). 35 is the Flexible Server maximum.
+PG_BACKUP_RETENTION="${PG_BACKUP_RETENTION:-35}"
+# Geo-redundant backup can only be chosen when the server is created; an existing server keeps
+# whatever it was built with. Set to Disabled if the region has no paired region for it.
+PG_GEO_BACKUP="${PG_GEO_BACKUP:-Enabled}"
+# Optional customer-managed key for the server (production). Also only settable at creation. The
+# key and identity must already exist (Key Vault with purge protection, user-assigned identity with
+# "Key Vault Crypto Service Encryption User"). With geo backup enabled, Azure also needs a key and
+# identity in the paired region: PG_CMK_BACKUP_KEY_ID and PG_CMK_BACKUP_IDENTITY_ID.
+PG_CMK_KEY_ID="${PG_CMK_KEY_ID:-}"
+PG_CMK_IDENTITY_ID="${PG_CMK_IDENTITY_ID:-}"
+PG_CMK_BACKUP_KEY_ID="${PG_CMK_BACKUP_KEY_ID:-}"
+PG_CMK_BACKUP_IDENTITY_ID="${PG_CMK_BACKUP_IDENTITY_ID:-}"
 
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_rsa.pub}"
 
@@ -243,11 +256,26 @@ az network vnet subnet update -g "$RG" --vnet-name "$VNET" -n "$APP_SUBNET" \
 step "PostgreSQL Flexible Server (this takes several minutes)"
 if exists az postgres flexible-server show -g "$RG" -n "$PG_NAME"; then
   echo "    exists"
+  # Retention is adjustable after creation; geo-redundancy and the encryption key are not.
+  az postgres flexible-server update -g "$RG" -n "$PG_NAME" \
+    --backup-retention "$PG_BACKUP_RETENTION" -o none
+  echo "    point-in-time restore window set to ${PG_BACKUP_RETENTION} days"
   PG_PASSWORD="$(grep -E '^PG_PASSWORD=' "$SECRETS_FILE" 2>/dev/null | cut -d= -f2- || true)"
   [[ -n "$PG_PASSWORD" ]] || echo "    note: password unknown (not in $SECRETS_FILE); reset it with 'az postgres flexible-server update --admin-password'"
 else
   PG_PASSWORD="$(openssl rand -hex 24)"
   PG_ERR="$(mktemp)"
+  PG_EXTRA=()
+  if [[ -n "$PG_CMK_KEY_ID" ]]; then
+    [[ -n "$PG_CMK_IDENTITY_ID" ]] || fail "PG_CMK_KEY_ID needs PG_CMK_IDENTITY_ID"
+    PG_EXTRA+=(--key "$PG_CMK_KEY_ID" --identity "$PG_CMK_IDENTITY_ID")
+    if [[ "$PG_GEO_BACKUP" == "Enabled" ]]; then
+      [[ -n "$PG_CMK_BACKUP_KEY_ID" && -n "$PG_CMK_BACKUP_IDENTITY_ID" ]] ||
+        fail "a customer-managed key with geo backup also needs PG_CMK_BACKUP_KEY_ID and PG_CMK_BACKUP_IDENTITY_ID (paired region), or set PG_GEO_BACKUP=Disabled"
+      PG_EXTRA+=(--backup-key "$PG_CMK_BACKUP_KEY_ID" --backup-identity "$PG_CMK_BACKUP_IDENTITY_ID")
+    fi
+    echo "    using a customer-managed encryption key"
+  fi
   # Private access has to be chosen at creation time. A public-access server cannot be
   # converted to VNet integration afterwards; it has to be rebuilt.
   if ! az postgres flexible-server create \
@@ -256,8 +284,11 @@ else
     --storage-size "$PG_STORAGE_GB" --version "$PG_VERSION" \
     --admin-user "$PG_ADMIN" --admin-password "$PG_PASSWORD" \
     --database-name "$PG_DATABASE" \
+    --backup-retention "$PG_BACKUP_RETENTION" \
+    --geo-redundant-backup "$PG_GEO_BACKUP" \
     --vnet "$VNET" --subnet "$DB_SUBNET" \
     --private-dns-zone "$DNS_ZONE" \
+    "${PG_EXTRA[@]+"${PG_EXTRA[@]}"}" \
     --yes -o none 2>"$PG_ERR"; then
 
     cat "$PG_ERR" >&2
@@ -267,6 +298,9 @@ else
     cat >&2 <<FAILED
 
 Creating the server failed even though '$LOCATION' reports itself as available.
+
+If the error mentions geo-redundant backup, the region has no paired region for it: re-run with
+PG_GEO_BACKUP=Disabled (and rely on the monthly dumps in geo-redundant blob storage instead).
 
 Retrying the same region usually fails the same way. Move to another one, remembering that the
 network has to move with it: a privately networked server must share a region with its VM. The

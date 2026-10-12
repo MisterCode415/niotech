@@ -154,7 +154,7 @@ export async function labRoutes(app: FastifyInstance) {
     if (buffer.byteLength === 0) throw badRequest('The uploaded file is empty');
 
     const storageKey = generateStorageKey(ctx.businessUnitId, upload.filename);
-    await storage.put(storageKey, buffer);
+    await storage.put(storageKey, buffer, upload.mimetype);
 
     const file = await withTenant(ctx, async (tx) => {
       // Confirms the order is in this tenant before the file is attributed to it.

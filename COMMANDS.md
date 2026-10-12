@@ -338,6 +338,13 @@ docker run --rm postgres:17-alpine psql "$ADMIN_DATABASE_URL" -c \
   "select rolname, rolsuper, rolbypassrls from pg_roles where rolname = 'nio_app';"
 ```
 
+## PHI storage, backups, and restore
+
+Lab PDFs live in an Azure Blob container and the database is dumped monthly to write-once
+storage. Provisioning is `./deploy/azure-storage.sh` (add `CMK=1` for production). Setup, listing
+backups, restoring the database and PDFs, the quarterly restore test, and locking the write-once
+policy are all in [RUNBOOK-backup-restore.md](RUNBOOK-backup-restore.md).
+
 ## Azure Communication Services email
 
 From the workstation:

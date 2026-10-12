@@ -5,7 +5,7 @@ signing a Business Associate Agreement covers their infrastructure. It does not 
 this application HIPAA-compliant. Use this file to sequence work toward a posture
 that can be assessed.
 
-Last updated: 2026-10-12 (steps 1 and 2 of the code work: access audit, log hygiene, `aiDraft` strip, provider approval gate; then marketing HTML sanitizing, idle logout, per-tab tokens, opt-in staff MFA, and the disclosures export).
+Last updated: 2026-10-12 (blob storage, backups, and restore runbook added, scripted but not applied; earlier: steps 1 and 2 of the code work: access audit, log hygiene, `aiDraft` strip, provider approval gate; then marketing HTML sanitizing, idle logout, per-tab tokens, opt-in staff MFA, and the disclosures export).
 
 ## What HIPAA is asking of the application
 
@@ -52,14 +52,31 @@ At a high level, a covered entity / BA handling ePHI needs:
 
 Numbered so remediations can refer back. Severity is operational, not legal.
 
-### 1. No encryption at rest / CMK on the PHI volume
+### 1. Encryption at rest: code and scripts done, nothing applied yet
 
-Lab PDFs live as plaintext files under `STORAGE_LOCAL_PATH` (default `./storage`). The
-interface is shaped for an object-store driver, but only `local` exists. Database
-columns that will hold extracted report text and patient–AI conversations are also
-plaintext Postgres.
+**Done in code and scripts:** lab PDFs are written through an Azure Blob driver
+(`services/storage.ts`) that authenticates with the VM's managed identity, never overwrites an
+existing blob, and is required in production (a production boot with `STORAGE_DRIVER=local`
+is refused). `deploy/azure-storage.sh` creates a GRS storage account with shared-key access
+off, public access off, and a default-deny firewall that admits only the app subnet and the
+operator. Azure Storage and Flexible Server encrypt at rest with Microsoft-managed keys by
+default; `CMK=1` (storage) and `PG_CMK_*` (database) switch to keys in your own Key Vault.
 
-**Risk:** disk snapshot, volume theft, or a host-level compromise exposes every report.
+**Still open:**
+
+- **Nothing is live.** The script has not been run, the dev stack still keeps PDFs on the VM
+  disk, and the Azure CLI commands were written from documentation, not run against the
+  subscription. Expect to fix a flag or two on first run.
+- The dev stack uses Microsoft-managed keys. Customer-managed keys exist only as options for
+  the future production stack, and a Flexible Server's key and geo-redundancy can only be chosen
+  when it is created, so the current server cannot be converted.
+- Extracted report text and AI chat logs are plain columns inside an encrypted database. Disk or
+  server-level encryption does not protect them from anyone with database access.
+- The VM's OS disk uses Azure's default platform-managed encryption, and the `nio-storage`
+  volume keeps the old plaintext PDFs until you remove it after the cutover.
+
+**Risk:** reduced from "plaintext files on a VM disk" to "database and blobs encrypted with
+keys Microsoft or you manage"; a compromised API identity can still read every PDF.
 
 ### 2. PHI access audit: partly addressed
 
@@ -132,14 +149,35 @@ patient data would still leak it.
 **Risk:** ops tools, log drains, and support screenshots become a second PHI store
 without a BAA or retention control.
 
-### 6. Offsite PHI backups and retention
+### 6. Backups and retention: backup side done in code, retention side open
 
-Azure Flexible Server has 7-day PITR for the database. The PHI file volume is not
-backed up by the provisioner. There is no documented retention / destruction schedule
-for `order_events`, notifications, payment payloads, or (new) chat logs.
+**Done in code and scripts (not yet applied):**
 
-**Risk:** ransomware or disk loss loses lab PDFs; over-retention of chat logs expands
-breach scope.
+- Database: point-in-time restore raised to 35 days (`azure-provision.sh` converges existing
+  servers), plus a monthly `pg_dump` (`deploy/db-dump.sh`, systemd timer) kept 7 years in a
+  write-once, GRS blob container, using a read-only `nio_backup` login.
+- PDFs: versioning, 30-day soft delete, and 29-day blob point-in-time restore on a GRS account.
+- `RUNBOOK-backup-restore.md`: how to list backups, restore the database and PDFs, run a
+  quarterly restore test, and lock the write-once policy.
+
+**Still open:**
+
+- **Nothing has been run, and no restore has ever been tested.** Do the quarterly restore test
+  in the runbook before relying on any of this.
+- The write-once policy is created **unlocked**; until you lock it (irreversible), an
+  administrator can weaken it.
+- `nio_backup` has `BYPASSRLS` (a dump under row-level security would be empty), so its
+  password is a high-value secret; it is read-only and kept in `/etc/nio/backup.env` (root-only).
+- Dumps are kept 7 years and cannot be deleted, so they will outlive any later destruction
+  schedule for the live data. Deleting a patient's data from the database does not remove it from
+  old dumps.
+- Geo-redundant database backup applies only to servers created from now on; the current
+  server has none, so a region loss means restoring from the latest monthly dump.
+- There is still **no destruction schedule** for `order_events`, notifications, payment
+  payloads, extractions, or chat logs, and no retention policy for `phi_access_events`.
+
+**Risk:** ransomware or disk loss is now recoverable on paper; over-retention of chat logs and
+payment payloads still expands breach scope.
 
 ### 7. Marketing HTML: addressed, with limits
 
@@ -180,9 +218,9 @@ Do these in order. Later items assume earlier ones exist so PHI is not copied in
 new store we cannot audit.
 
 1. **Access audit + log hygiene (done, with the open items in gaps 2 and 5)** — append-only `phi_access_events` (actor, role, resource type/id, action, request id, timestamp). Scrub emails and payloads from application logs. Strip `aiDraft` from the patient API. Do this before any production PHI chat.
-2. **Encryption at rest** — CMK (or platform-managed key with rotation) on the PHI volume; encrypted Postgres (Flexible Server + customer key if required); keep `APP_ENCRYPTION_KEY` in the secret store, not the repo.
+2. **Encryption at rest (code and scripts done; apply with `deploy/azure-storage.sh`, see gap 1)** — blob storage for PDFs, Microsoft-managed keys on dev, CMK scripted for production. Still to do: keep `APP_ENCRYPTION_KEY` in the secret store, not the repo.
 3. **Session / MFA policy (code done; needs the Auth0 steps in `COMMANDS.md` and `REQUIRE_STAFF_MFA=true`)** — MFA guard, idle logout, and the `localStorage` removal are shipped. Absolute session lifetime and the MFA Action still have to be applied to the tenant.
-4. **Backups and retention** — offsite encrypted backup of the PHI volume; tested restore; retention/destruction for chat, extractions, notifications, and payment events.
+4. **Backups and retention (backups scripted, see gap 6)** — still to do: run it, test a restore, and add retention/destruction for chat, extractions, notifications, and payment events.
 5. **Sanitize marketing HTML (done, see gap 7)** — allowlist on write and read.
 6. **LLM BAAs before production PHI chat** — do not point the cascade at a vendor without a BAA. Prefer a self-hosted or BAA-covered endpoint. Record the agreement in each provider's BAA reference field and tick “Approved for PHI” only then; the production gate (see above) keeps unapproved providers dark.
 7. **Operational** — workforce training, incident runbook. The accounting-of-disclosures export from `phi_access_events` + `order_events` + `report_conversations` is done (per patient or order, for `bu_admin`).

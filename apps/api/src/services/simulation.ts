@@ -96,7 +96,7 @@ export async function seedMockFlow(operator: SimulationOperator): Promise<SeedRe
   assertSimulationEnabled();
 
   const resultKey = generateStorageKey(operator.businessUnitId, 'mock-result.pdf');
-  await storage.put(resultKey, PLACEHOLDER_PDF);
+  await storage.put(resultKey, PLACEHOLDER_PDF, 'application/pdf');
 
   return withTenant(
     operatorScope(operator),
