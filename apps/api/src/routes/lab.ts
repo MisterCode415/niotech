@@ -16,6 +16,7 @@ import {
   syncOrderFromKits,
 } from '../services/orderWorkflow.js';
 import { storage } from '../services/storage.js';
+import { recordPhiAccess } from '../services/phiAudit.js';
 import { checkInAtLab } from '../services/kitCustody.js';
 
 const slugParam = z.object({ slug: z.string() });
@@ -79,9 +80,15 @@ export async function labRoutes(app: FastifyInstance) {
     const { slug, orderId } = orderParam.parse(request.params);
     const ctx = requireMembership(request, slug, ['lab']);
 
-    const detail = await withTenant(ctx, (tx) =>
-      getOrderDetail(tx, ctx.businessUnitId, orderId),
-    );
+    const detail = await withTenant(ctx, async (tx) => {
+      const found = await getOrderDetail(tx, ctx.businessUnitId, orderId);
+      await recordPhiAccess(tx, request, ctx, {
+        resourceType: 'order_detail',
+        orderId,
+        action: 'view',
+      });
+      return found;
+    });
     return { ...detail, review: null };
   });
 

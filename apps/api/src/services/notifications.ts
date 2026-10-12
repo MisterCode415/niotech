@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import { env, smtpIsLocalCapture } from '../env.js';
 import { withTenant } from '../db/client.js';
 import { notifications } from '../db/schema.js';
+import { describeError } from '../lib/logSafe.js';
 
 export interface NotificationIntent {
   businessUnitId: string;
@@ -68,7 +69,7 @@ export async function sendInvitationEmail(input: {
     : 'Qinio platform administrator';
   const needsActivation = Boolean(input.passwordSetUrl);
 
-  const result = await transport.sendMail({
+  await transport.sendMail({
     from: env.SMTP_FROM,
     to: input.email,
     subject: needsActivation
@@ -110,8 +111,8 @@ export async function sendInvitationEmail(input: {
   });
 
   // SMTP acceptance is the strongest synchronous guarantee available. Final inbox delivery,
-  // bounce, and complaint events require the relay's asynchronous event feed.
-  console.info(`Invitation email accepted by SMTP relay (${result.messageId})`);
+  // bounce, and complaint events require the relay's asynchronous event feed. The relay's
+  // message id is not logged: it is derived from the recipient on some providers.
 }
 
 /**
@@ -143,7 +144,7 @@ export async function dispatchNotifications(intents: NotificationIntent[]): Prom
       notificationId = row?.id ?? null;
       if (notificationId) result.recorded += 1;
     } catch (error) {
-      console.error('Failed to record notification', intent.type, error);
+      console.error('Failed to record notification', intent.type, describeError(error));
       continue;
     }
 
@@ -169,7 +170,7 @@ export async function dispatchNotifications(intents: NotificationIntent[]): Prom
     } catch (error) {
       result.emailFailures += 1;
       // Mailpit may not be running; the in-app notification already landed.
-      console.warn('Email delivery failed', intent.type, (error as Error).message);
+      console.warn('Email delivery failed', intent.type, describeError(error));
     }
   }
 

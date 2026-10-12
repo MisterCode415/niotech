@@ -73,6 +73,18 @@ export const catalogSyncStatusEnum = pgEnum('catalog_sync_status', [
 ]);
 export const fileExtractionMethodEnum = pgEnum('file_extraction_method', ['pdf_text', 'ocr']);
 export const reportMessageRoleEnum = pgEnum('report_message_role', ['user', 'assistant']);
+export const PHI_RESOURCE_TYPES = [
+  'order_detail',
+  'result_file',
+  'result_text',
+  'conversation',
+  'review',
+] as const;
+export const PHI_ACCESS_ACTIONS = ['view', 'download', 'extract', 'chat'] as const;
+export type PhiResourceType = (typeof PHI_RESOURCE_TYPES)[number];
+export type PhiAccessAction = (typeof PHI_ACCESS_ACTIONS)[number];
+export const phiResourceTypeEnum = pgEnum('phi_resource_type', PHI_RESOURCE_TYPES);
+export const phiAccessActionEnum = pgEnum('phi_access_action', PHI_ACCESS_ACTIONS);
 
 /* --------------------------------- Platform --------------------------------- */
 
@@ -732,6 +744,10 @@ export const platformLlmProviders = pgTable(
     maxOutputTokens: integer('max_output_tokens').notNull().default(1024),
     sortOrder: integer('sort_order').notNull().default(0),
     enabled: boolean('enabled').notNull().default(true),
+    /** A platform admin attests a BAA is on file; production PHI chat only uses approved rows. */
+    phiApproved: boolean('phi_approved').notNull().default(false),
+    phiApprovedAt: timestamp('phi_approved_at', { withTimezone: true }),
+    phiApprovalNote: text('phi_approval_note'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -813,6 +829,32 @@ export const patientLlmUsage = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex('patient_llm_usage_patient_key').on(t.businessUnitId, t.patientUserId)],
+);
+
+/**
+ * Append-only record of who opened which PHI. Intentionally no foreign keys: the trail must
+ * outlive the rows it describes. UPDATE/DELETE are blocked by a trigger and revoked from nio_app.
+ */
+export const phiAccessEvents = pgTable(
+  'phi_access_events',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    businessUnitId: uuid('business_unit_id').notNull(),
+    actorUserId: uuid('actor_user_id'),
+    actorRole: text('actor_role').notNull(),
+    actingPlatformAdmin: boolean('acting_platform_admin').notNull().default(false),
+    resourceType: phiResourceTypeEnum('resource_type').notNull(),
+    resourceId: uuid('resource_id'),
+    orderId: uuid('order_id'),
+    action: phiAccessActionEnum('action').notNull(),
+    requestId: text('request_id'),
+    ip: text('ip'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('phi_access_events_bu_order_idx').on(t.businessUnitId, t.orderId, t.createdAt),
+    index('phi_access_events_actor_idx').on(t.businessUnitId, t.actorUserId, t.createdAt),
+  ],
 );
 
 /* --------------------------------- Relations --------------------------------- */

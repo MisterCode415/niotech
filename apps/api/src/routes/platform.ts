@@ -174,6 +174,9 @@ export async function platformRoutes(app: FastifyInstance) {
           maxOutputTokens: provider.maxOutputTokens,
           sortOrder: provider.sortOrder,
           enabled: provider.enabled,
+          phiApproved: provider.phiApproved,
+          phiApprovedAt: provider.phiApprovedAt,
+          phiApprovalNote: provider.phiApprovalNote,
         })),
       };
     });
@@ -217,6 +220,9 @@ export async function platformRoutes(app: FastifyInstance) {
           outputTokenCostPerMillion: String(input.outputTokenCostPerMillion),
           maxOutputTokens: input.maxOutputTokens,
           enabled: input.enabled,
+          phiApproved: input.phiApproved,
+          phiApprovedAt: input.phiApproved ? new Date() : null,
+          phiApprovalNote: input.phiApprovalNote?.trim() || null,
           sortOrder,
         })
         .returning({ id: platformLlmProviders.id });
@@ -261,6 +267,10 @@ export async function platformRoutes(app: FastifyInstance) {
           outputTokenCostPerMillion: String(input.outputTokenCostPerMillion),
           maxOutputTokens: input.maxOutputTokens,
           enabled: input.enabled,
+          phiApproved: input.phiApproved,
+          // Keep the original attestation time while approval stays on; clear it when revoked.
+          phiApprovedAt: input.phiApproved ? (existing.phiApprovedAt ?? new Date()) : null,
+          phiApprovalNote: input.phiApprovalNote?.trim() || null,
           updatedAt: new Date(),
           ...(input.apiKey?.trim() ? { apiKeyCiphertext: encryptSecret(input.apiKey.trim()) } : {}),
         })

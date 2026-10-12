@@ -10,6 +10,7 @@ import { getOrderDetail } from '../services/orderQueries.js';
 import { dispatchNotifications } from '../services/notifications.js';
 import { releaseResults, transitionOrder } from '../services/orderWorkflow.js';
 import { storage } from '../services/storage.js';
+import { recordPhiAccess } from '../services/phiAudit.js';
 
 const slugParam = z.object({ slug: z.string() });
 const orderParam = slugParam.extend({ orderId: z.uuid() });
@@ -61,13 +62,19 @@ export async function doctorRoutes(app: FastifyInstance) {
     const { slug, orderId } = orderParam.parse(request.params);
     const ctx = requireMembership(request, slug, ['doctor']);
 
-    const detail = await withTenant(ctx, (tx) =>
-      getOrderDetail(tx, ctx.businessUnitId, orderId),
-    );
-
-    if (!detail.order.requiresClinician) {
-      throw badRequest('This package does not involve a clinician');
-    }
+    const detail = await withTenant(ctx, async (tx) => {
+      const found = await getOrderDetail(tx, ctx.businessUnitId, orderId);
+      if (!found.order.requiresClinician) {
+        throw badRequest('This package does not involve a clinician');
+      }
+      await recordPhiAccess(tx, request, ctx, {
+        resourceType: 'review',
+        resourceId: found.review?.id ?? null,
+        orderId,
+        action: 'view',
+      });
+      return found;
+    });
 
     return detail;
   });
@@ -90,6 +97,12 @@ export async function doctorRoutes(app: FastifyInstance) {
         .where(and(eq(labResults.orderId, orderId), eq(files.id, fileId)))
         .limit(1);
       if (!row) throw notFound('Result file not found');
+      await recordPhiAccess(tx, request, ctx, {
+        resourceType: 'result_file',
+        resourceId: fileId,
+        orderId,
+        action: 'download',
+      });
       return row;
     });
 

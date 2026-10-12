@@ -277,6 +277,9 @@ export const upsertLlmProviderSchema = z.object({
   outputTokenCostPerMillion: z.coerce.number().min(0).max(1_000_000).default(0),
   maxOutputTokens: z.coerce.number().int().min(16).max(128_000).default(1024),
   enabled: z.boolean().default(true),
+  /** Attests a BAA covers this vendor; production report chat skips providers without it. */
+  phiApproved: z.boolean().default(false),
+  phiApprovalNote: z.string().max(500).optional(),
   sortOrder: z.coerce.number().int().min(0).max(10_000).optional(),
 });
 

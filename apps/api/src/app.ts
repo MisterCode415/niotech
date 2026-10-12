@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyError } from 'fastify';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
@@ -6,6 +7,7 @@ import rawBody from 'fastify-raw-body';
 import { ZodError, z } from 'zod';
 import { env } from './env.js';
 import { HttpError } from './lib/errors.js';
+import { describeError } from './lib/logSafe.js';
 import { attachActor } from './auth/context.js';
 import { healthRoutes } from './routes/health.js';
 import { authRoutes } from './routes/auth.js';
@@ -24,16 +26,46 @@ import { stripeWebhookRoutes } from './routes/stripeWebhooks.js';
 import { simulationRoutes } from './routes/simulation.js';
 import { processCatalogSyncJobs, stripeEnabled } from './services/stripe.js';
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function buildApp() {
   const app = Fastify({
     // Behind nginx every request otherwise appears to come from the proxy, which would make
     // rate limiting count all clients as one and log the wrong address for every request.
     trustProxy: env.NODE_ENV === 'production',
+    // Correlate PHI access rows and log lines. A caller-supplied id is only honored when it is a
+    // UUID, so the header cannot be used to inject arbitrary text into logs or the audit trail.
+    genReqId: (req) => {
+      const supplied = req.headers['x-request-id'];
+      return typeof supplied === 'string' && UUID_PATTERN.test(supplied)
+        ? supplied.toLowerCase()
+        : randomUUID();
+    },
     logger:
       env.NODE_ENV === 'test'
         ? false
         : {
             level: 'info',
+            redact: {
+              paths: [
+                'req.headers.authorization',
+                'req.headers.cookie',
+                'req.headers["x-qinio-integration-key"]',
+                'req.headers["stripe-signature"]',
+                '*.email',
+              ],
+              censor: '[redacted]',
+            },
+            serializers: {
+              // Route pattern, never the raw URL: paths and query strings can carry identifiers.
+              req(request) {
+                return {
+                  method: request.method,
+                  route: request.routeOptions?.url ?? '(unmatched)',
+                  id: request.id,
+                };
+              },
+            },
             transport:
               env.NODE_ENV === 'development'
                 ? {
@@ -67,6 +99,10 @@ export async function buildApp() {
 
   app.decorateRequest('actor', null);
 
+  app.addHook('onRequest', async (request, reply) => {
+    reply.header('x-request-id', request.id);
+  });
+
   app.addHook('preHandler', async (request) => {
     await attachActor(request);
   });
@@ -87,7 +123,7 @@ export async function buildApp() {
       return reply.status(statusCode).send({ error: error.message });
     }
 
-    request.log.error(error);
+    request.log.error({ err: describeError(error), reqId: request.id }, 'Unhandled request error');
     return reply.status(500).send({ error: 'Internal server error' });
   });
 
@@ -109,7 +145,9 @@ export async function buildApp() {
 
   if (stripeEnabled()) {
     const catalogTimer = setInterval(() => {
-      void processCatalogSyncJobs().catch((error) => app.log.error(error));
+      void processCatalogSyncJobs().catch((error) =>
+        app.log.error({ err: describeError(error) }, 'Catalog sync job failed'),
+      );
     }, 60_000);
     catalogTimer.unref();
     app.addHook('onClose', async () => clearInterval(catalogTimer));

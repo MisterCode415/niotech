@@ -107,3 +107,78 @@ function buildTextPdf(line: string): Buffer {
 }
 
 export const TEXT_PDF = buildTextPdf('Glucose 92 mg/dL reference 70-99');
+
+/**
+ * Drives a no-clinician package from purchase to released results so PHI routes can be exercised.
+ * Needs the demo data from `db:seed`; `tokens` must hold patient, fulfillment, and lab sessions.
+ */
+export async function releaseDirectOrder(
+  app: FastifyInstance,
+  tokens: Record<string, string>,
+  pdf: Buffer = TEXT_PDF,
+) {
+  const catalog = await app
+    .inject({ method: 'GET', url: '/api/public/vitality/packages' })
+    .then((r) => r.json() as { packages: Array<{ id: string; requiresClinician: boolean }> });
+  const pkg = catalog.packages.find((item) => !item.requiresClinician);
+  if (!pkg) throw new Error('missing package');
+
+  const { order } = await call<{ order: { id: string } }>(app, {
+    method: 'POST',
+    url: '/api/bu/vitality/patient/orders',
+    token: tokens.patient!,
+    payload: { packageId: pkg.id, shippingAddress: TEST_ADDRESS, shippingMethod: 'ground' },
+    expect: 201,
+  });
+  await call(app, {
+    method: 'POST',
+    url: `/api/bu/vitality/patient/orders/${order.id}/pay`,
+    token: tokens.patient!,
+    payload: { paymentToken: 'tok_test' },
+  });
+  await call(app, {
+    method: 'POST',
+    url: `/api/bu/vitality/fulfillment/orders/${order.id}/ship`,
+    token: tokens.fulfillment!,
+    payload: { carrier: 'UPS', trackingNumber: `1Z${Date.now()}` },
+  });
+  const detail = await call<{ kits: Array<{ id: string }> }>(app, {
+    method: 'GET',
+    url: `/api/bu/vitality/patient/orders/${order.id}`,
+    token: tokens.patient!,
+  });
+  for (const kit of detail.kits) {
+    await call(app, {
+      method: 'POST',
+      url: `/api/bu/vitality/patient/orders/${order.id}/kits/${kit.id}/received`,
+      token: tokens.patient!,
+    });
+    await call(app, {
+      method: 'POST',
+      url: `/api/bu/vitality/patient/orders/${order.id}/kits/${kit.id}/sent-to-lab`,
+      token: tokens.patient!,
+    });
+    await call(app, {
+      method: 'POST',
+      url: `/api/bu/vitality/lab/kits/${kit.id}/check-in`,
+      token: tokens.lab!,
+    });
+  }
+  const { payload, headers } = multipartBody('file', 'results.pdf', 'application/pdf', pdf);
+  const upload = await app.inject({
+    method: 'POST',
+    url: `/api/bu/vitality/lab/orders/${order.id}/files`,
+    headers: { ...auth(tokens.lab!), ...headers },
+    payload,
+  });
+  const fileId = upload.json().file.id as string;
+  for (const kit of detail.kits) {
+    await call(app, {
+      method: 'POST',
+      url: `/api/bu/vitality/lab/kits/${kit.id}/complete`,
+      token: tokens.lab!,
+      payload: { fileId },
+    });
+  }
+  return { orderId: order.id, fileId };
+}

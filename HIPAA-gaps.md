@@ -5,7 +5,7 @@ signing a Business Associate Agreement covers their infrastructure. It does not 
 this application HIPAA-compliant. Use this file to sequence work toward a posture
 that can be assessed.
 
-Last updated: 2026-10-12.
+Last updated: 2026-10-12 (step 1: access audit, log hygiene, `aiDraft` strip, provider approval gate).
 
 ## What HIPAA is asking of the application
 
@@ -38,6 +38,10 @@ At a high level, a covered entity / BA handling ePHI needs:
 | Rate limiting | Fastify plugin in `app.ts` | Slows credential stuffing and scan abuse |
 | 5xx bodies do not leak stacks | `app.ts` error handler | Reduces accidental PHI / internals in client responses |
 | BAA guidance for Azure / ACS vs SendGrid | `README.md` | ACS stays inside an Azure BAA; SendGrid is documented as the quicker, uncovered path |
+| Append-only PHI access audit | `phi_access_events` (`0012_phi_access.sql`), `services/phiAudit.ts` | Patient order view (released only), result PDF, extracted text, and report chat; doctor review and result PDF; lab order view. Written in the same transaction as the read, so a failed audit write fails the read. Stores ids, role, act-as flag, request id, and IP, never report text. UPDATE/DELETE blocked by trigger and revoked from `nio_app`; only `bu_admin` and platform scope can read |
+| Request ids and redacted logs | `genReqId` + pino `redact`/`req` serializer in `app.ts`, `lib/logSafe.ts` | UUID request ids are echoed as `x-request-id` and tie log lines to audit rows. Auth/cookie/integration/Stripe headers and `*.email` are redacted, URLs log as route patterns, and production error logs carry only error name/code/status |
+| Patient API omits `aiDraft` / `aiModel` | `routes/patient.ts` | The model's draft is the clinician's working note and is no longer in the patient payload |
+| PHI-approved LLM providers only in production | `phi_approved` on `platform_llm_providers`, `eligibleProviderRows()` in `reportChat.ts`, Platform AI page | With `NODE_ENV=production`, chat skips every provider a platform admin has not marked as BAA-covered (with a reference note). With none approved, chat reports as not configured and no PHI leaves the system |
 
 ## Gaps
 
@@ -52,14 +56,22 @@ plaintext Postgres.
 
 **Risk:** disk snapshot, volume theft, or a host-level compromise exposes every report.
 
-### 2. No dedicated PHI access audit
+### 2. PHI access audit: partly addressed
 
-`order_events` records status transitions, not “who opened which PDF / extraction /
-conversation, when, from where.” There is no retention policy or export for access
-logs.
+**Done:** `phi_access_events` records who opened which order, PDF, extraction, or
+conversation, when, and from which request id and IP (see the table above).
 
-**Risk:** cannot answer an accounting-of-disclosures request or investigate a snooping
-clinician / fulfillment user.
+**Still open:**
+
+- No retention policy and no export, so an accounting-of-disclosures request still needs a
+  hand-written query.
+- Fulfillment users do not read PHI today, but the list and queue endpoints that return
+  patient names (`doctor/queue`, `lab/queue`, `bu_admin` order list) are not audited.
+- The audit write is a plain insert; there is no tamper-evident chaining or off-box copy, so a
+  database administrator can still drop the trigger.
+
+**Risk:** the audit trail can be rewritten by someone with schema privileges, and exports
+are manual.
 
 ### 3. MFA and idle session timeout are not enforced in-app
 
@@ -78,12 +90,18 @@ the access token in `localStorage` (`nio.accessToken`). XSS on the marketing HTM
 **Risk:** acceptable only on throwaway local/dev. Fatal if a production deploy ever
 boots with `AUTH_PROVIDER=dev` (boot guard exists; do not weaken it).
 
-### 5. Log hygiene
+### 5. Log hygiene: partly addressed
 
-Notification failures log the recipient email. Invitation sends log message ids.
-`payment_events.payload` stores the full Stripe event JSON (PII, not usually clinical
-PHI, but still regulated in combination). Mailpit in dev displays patient names and
-order numbers. Application logs are not scrubbed against a PHI denylist.
+**Done:** the invitation message id is no longer logged, notification failures log only the
+notification type plus error name/code in production, Fastify request logs use route patterns
+and redact credential headers and `*.email`, and the error handler logs name/code/status only
+in production.
+
+**Still open:** `payment_events.payload` stores the full Stripe event JSON (PII, not usually
+clinical PHI, but still regulated in combination). Mailpit in dev displays patient names and
+order numbers. Seed scripts print account emails (they refuse to run in production).
+Redaction is path-based, not a general PHI denylist, so a new log line that interpolates
+patient data would still leak it.
 
 **Risk:** ops tools, log drains, and support screenshots become a second PHI store
 without a BAA or retention control.
@@ -111,7 +129,7 @@ day one of the feature**, not as later surprises.
 
 | Gap | Detail |
 |-----|--------|
-| Third-party LLM BAA | Chat sends extracted report text and the patient’s question to whatever URL is configured. OpenAI / Anthropic / a random gateway is a BA only if a BAA is in place. Do not enable production PHI chat without one. |
+| Third-party LLM BAA | Chat sends extracted report text and the patient’s question to the configured provider. OpenAI / Anthropic / a random gateway is a BA only if a BAA is in place. **Mitigated in code, not in law:** production chat only uses providers a platform admin marked “Approved for PHI”; the flag is an attestation, not proof. Nothing verifies that a BAA exists, covers that model, or that the URL really belongs to that vendor. Development and test ignore the flag. |
 | Extracted text and conversations are PHI | `file_extractions.extracted_text`, `report_messages.content`, and clinician interpretation copied into the prompt are ePHI at rest. |
 | API keys in the database | Provider keys are encrypted with `APP_ENCRYPTION_KEY`, but that key must be managed like a secret, rotated, and never logged. |
 | Prompt / response logging | Application logs must not print user questions, report text, or model replies. Token counts and provider ids are enough. |
@@ -120,7 +138,7 @@ day one of the feature**, not as later surprises.
 
 ### 9. Other known gaps (lower urgency, still real)
 
-- Patient order detail API can include `aiDraft` after release; the UI hides it, the API does not strip it.
+- ~~Patient order detail API can include `aiDraft` after release~~ Fixed: the patient API drops `aiDraft` and `aiModel`. Doctors still receive both.
 - Stripe Dashboard / webhook payloads may contain patient email and shipping address.
 - Integrations API (`INTEGRATION_API_SECRET`) can create orders server-to-server — treat that secret as production-grade.
 - No automatic logoff in the SPA.
@@ -131,12 +149,12 @@ day one of the feature**, not as later surprises.
 Do these in order. Later items assume earlier ones exist so PHI is not copied into a
 new store we cannot audit.
 
-1. **Access audit + log hygiene** — append-only `phi_access_events` (actor, role, resource type/id, action, request id, timestamp). Scrub emails and payloads from application logs. Strip `aiDraft` from the patient API. Do this before any production PHI chat.
+1. **Access audit + log hygiene (done, with the open items in gaps 2 and 5)** — append-only `phi_access_events` (actor, role, resource type/id, action, request id, timestamp). Scrub emails and payloads from application logs. Strip `aiDraft` from the patient API. Do this before any production PHI chat.
 2. **Encryption at rest** — CMK (or platform-managed key with rotation) on the PHI volume; encrypted Postgres (Flexible Server + customer key if required); keep `APP_ENCRYPTION_KEY` in the secret store, not the repo.
 3. **Session / MFA policy** — require Auth0 MFA for `bu_admin`, `doctor`, `lab`, `fulfillment`, and platform admins. Idle timeout + absolute session lifetime. Remove `localStorage` tokens when Auth0 is the only provider.
 4. **Backups and retention** — offsite encrypted backup of the PHI volume; tested restore; retention/destruction for chat, extractions, notifications, and payment events.
 5. **Sanitize marketing HTML** — allowlist tags before self-serve onboarding.
-6. **LLM BAAs before production PHI chat** — do not point the cascade at a vendor without a BAA. Prefer a self-hosted or BAA-covered endpoint. Document which provider rows are approved. Keep the feature dark (no enabled providers) until this is signed.
+6. **LLM BAAs before production PHI chat** — do not point the cascade at a vendor without a BAA. Prefer a self-hosted or BAA-covered endpoint. Record the agreement in each provider's BAA reference field and tick “Approved for PHI” only then; the production gate (see above) keeps unapproved providers dark.
 7. **Operational** — workforce training, incident runbook, accounting-of-disclosures export from `phi_access_events` + `order_events` + `report_conversations`.
 
 ## Current-pass choices that limit (not close) AI gaps

@@ -1,6 +1,7 @@
 import { and, asc, eq, sql } from 'drizzle-orm';
 import { DEFAULT_AI_DISCLAIMER } from '@nio/shared';
 import type { Tx } from '../db/client.js';
+import { env } from '../env.js';
 import {
   businessUnitAiSettings,
   fileExtractions,
@@ -40,13 +41,24 @@ function estimatedCostUsd(
   return (inputTokens / 1_000_000) * input + (outputTokens / 1_000_000) * output;
 }
 
+/**
+ * In production, report text and patient questions go only to providers a platform admin has
+ * marked as covered by a BAA. Development and test keep every enabled provider so local mocks work.
+ */
+export function eligibleProviderRows<T extends { phiApproved: boolean }>(
+  rows: T[],
+  nodeEnv: string = env.NODE_ENV,
+): T[] {
+  return nodeEnv === 'production' ? rows.filter((row) => row.phiApproved) : rows;
+}
+
 export async function loadEnabledProviders(tx: Tx): Promise<LlmProviderConfig[]> {
   const rows = await tx
     .select()
     .from(platformLlmProviders)
     .where(eq(platformLlmProviders.enabled, true))
     .orderBy(asc(platformLlmProviders.sortOrder));
-  return rows
+  return eligibleProviderRows(rows)
     .map((row) => ({
       id: row.id,
       name: row.name,

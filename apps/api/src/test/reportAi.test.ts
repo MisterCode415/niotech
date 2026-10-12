@@ -5,8 +5,16 @@ import { eq } from 'drizzle-orm';
 import { DEFAULT_AI_DISCLAIMER } from '@nio/shared';
 import { buildApp } from '../app.js';
 import { closeDb, withPlatformScope } from '../db/client.js';
-import { fileExtractions, files, patientLlmUsage } from '../db/schema.js';
-import { call, login, auth, multipartBody, TEXT_PDF, SAMPLE_PDF, TEST_ADDRESS } from './harness.js';
+import { fileExtractions, files, patientLlmUsage, phiAccessEvents } from '../db/schema.js';
+import { eligibleProviderRows } from '../services/reportChat.js';
+import {
+  call,
+  login,
+  auth,
+  TEXT_PDF,
+  SAMPLE_PDF,
+  releaseDirectOrder as releaseDirectOrderShared,
+} from './harness.js';
 import * as pdfExtract from '../services/pdfExtract.js';
 
 let app: FastifyInstance;
@@ -101,72 +109,7 @@ async function seedProvider(suffix: string, port = mockPort) {
   });
 }
 
-async function releaseDirectOrder(pdf = TEXT_PDF) {
-  const catalog = await app
-    .inject({ method: 'GET', url: '/api/public/vitality/packages' })
-    .then((r) => r.json() as { packages: Array<{ id: string; requiresClinician: boolean }> });
-  const pkg = catalog.packages.find((item) => !item.requiresClinician);
-  if (!pkg) throw new Error('missing package');
-
-  const { order } = await call<{ order: { id: string } }>(app, {
-    method: 'POST',
-    url: '/api/bu/vitality/patient/orders',
-    token: tokens.patient!,
-    payload: { packageId: pkg.id, shippingAddress: TEST_ADDRESS, shippingMethod: 'ground' },
-    expect: 201,
-  });
-  await call(app, {
-    method: 'POST',
-    url: `/api/bu/vitality/patient/orders/${order.id}/pay`,
-    token: tokens.patient!,
-    payload: { paymentToken: 'tok_test' },
-  });
-  await call(app, {
-    method: 'POST',
-    url: `/api/bu/vitality/fulfillment/orders/${order.id}/ship`,
-    token: tokens.fulfillment!,
-    payload: { carrier: 'UPS', trackingNumber: `1Z${Date.now()}` },
-  });
-  const detail = await call<{ kits: Array<{ id: string }> }>(app, {
-    method: 'GET',
-    url: `/api/bu/vitality/patient/orders/${order.id}`,
-    token: tokens.patient!,
-  });
-  for (const kit of detail.kits) {
-    await call(app, {
-      method: 'POST',
-      url: `/api/bu/vitality/patient/orders/${order.id}/kits/${kit.id}/received`,
-      token: tokens.patient!,
-    });
-    await call(app, {
-      method: 'POST',
-      url: `/api/bu/vitality/patient/orders/${order.id}/kits/${kit.id}/sent-to-lab`,
-      token: tokens.patient!,
-    });
-    await call(app, {
-      method: 'POST',
-      url: `/api/bu/vitality/lab/kits/${kit.id}/check-in`,
-      token: tokens.lab!,
-    });
-  }
-  const { payload, headers } = multipartBody('file', 'results.pdf', 'application/pdf', pdf);
-  const upload = await app.inject({
-    method: 'POST',
-    url: `/api/bu/vitality/lab/orders/${order.id}/files`,
-    headers: { ...auth(tokens.lab!), ...headers },
-    payload,
-  });
-  const fileId = upload.json().file.id as string;
-  for (const kit of detail.kits) {
-    await call(app, {
-      method: 'POST',
-      url: `/api/bu/vitality/lab/kits/${kit.id}/complete`,
-      token: tokens.lab!,
-      payload: { fileId },
-    });
-  }
-  return { orderId: order.id, fileId };
-}
+const releaseDirectOrder = (pdf = TEXT_PDF) => releaseDirectOrderShared(app, tokens, pdf);
 
 describe('report AI', () => {
   beforeEach(() => {
@@ -222,6 +165,68 @@ describe('report AI', () => {
 
     const usage = await withPlatformScope((tx) => tx.select().from(patientLlmUsage));
     expect(usage.length).toBeGreaterThan(0);
+
+    // The text fetch and the chat each left one identifier-only audit row.
+    const audit = await withPlatformScope((tx) =>
+      tx.select().from(phiAccessEvents).where(eq(phiAccessEvents.orderId, orderId)),
+    );
+    const extractRows = audit.filter((row) => row.action === 'extract');
+    const chatRows = audit.filter((row) => row.action === 'chat');
+    expect(extractRows).toHaveLength(1);
+    expect(extractRows[0]).toMatchObject({
+      actorRole: 'patient',
+      resourceType: 'result_text',
+      resourceId: fileId,
+    });
+    expect(chatRows).toHaveLength(1);
+    expect(chatRows[0]).toMatchObject({ actorRole: 'patient', resourceType: 'conversation' });
+    expect(JSON.stringify(audit)).not.toContain('Glucose');
+  });
+
+  it('only uses PHI-approved providers in production', () => {
+    const rows = [
+      { id: 'a', phiApproved: false },
+      { id: 'b', phiApproved: true },
+    ];
+    expect(eligibleProviderRows(rows, 'production').map((row) => row.id)).toEqual(['b']);
+    expect(eligibleProviderRows(rows, 'development')).toHaveLength(2);
+    expect(eligibleProviderRows(rows, 'test')).toHaveLength(2);
+    expect(eligibleProviderRows([{ id: 'a', phiApproved: false }], 'production')).toHaveLength(0);
+  });
+
+  it('records and clears the PHI approval attestation on a provider', async () => {
+    const { id } = await seedProvider('approval');
+    const base = {
+      name: 'Mock approval',
+      apiUrl: `http://127.0.0.1:${mockPort}/v1`,
+      model: 'mock-model',
+    };
+    await call(app, {
+      method: 'PUT',
+      url: `/api/platform/ai/providers/${id}`,
+      token: tokens.platform!,
+      payload: { ...base, phiApproved: true, phiApprovalNote: 'BAA 2026-10-01' },
+    });
+    const approved = await call<{
+      providers: Array<{ id: string; phiApproved: boolean; phiApprovedAt: string | null; phiApprovalNote: string | null }>;
+    }>(app, { method: 'GET', url: '/api/platform/ai', token: tokens.platform! });
+    const row = approved.providers.find((provider) => provider.id === id);
+    expect(row).toMatchObject({ phiApproved: true, phiApprovalNote: 'BAA 2026-10-01' });
+    expect(row?.phiApprovedAt).toBeTruthy();
+
+    await call(app, {
+      method: 'PUT',
+      url: `/api/platform/ai/providers/${id}`,
+      token: tokens.platform!,
+      payload: { ...base, phiApproved: false },
+    });
+    const revoked = await call<{
+      providers: Array<{ id: string; phiApproved: boolean; phiApprovedAt: string | null }>;
+    }>(app, { method: 'GET', url: '/api/platform/ai', token: tokens.platform! });
+    expect(revoked.providers.find((provider) => provider.id === id)).toMatchObject({
+      phiApproved: false,
+      phiApprovedAt: null,
+    });
   });
 
   it('uses the OCR path when a PDF has no digital text', async () => {

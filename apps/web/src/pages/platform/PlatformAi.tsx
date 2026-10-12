@@ -18,6 +18,9 @@ interface Provider {
   maxOutputTokens: number;
   sortOrder: number;
   enabled: boolean;
+  phiApproved: boolean;
+  phiApprovedAt: string | null;
+  phiApprovalNote: string | null;
 }
 
 interface FormState {
@@ -30,6 +33,8 @@ interface FormState {
   outputTokenCostPerMillion: number;
   maxOutputTokens: number;
   enabled: boolean;
+  phiApproved: boolean;
+  phiApprovalNote: string;
 }
 
 const emptyForm = (): FormState => ({
@@ -42,6 +47,8 @@ const emptyForm = (): FormState => ({
   outputTokenCostPerMillion: 0,
   maxOutputTokens: 1024,
   enabled: true,
+  phiApproved: false,
+  phiApprovalNote: '',
 });
 
 export function PlatformAi() {
@@ -180,6 +187,15 @@ export function PlatformAi() {
                   <div className="small muted">
                     {provider.enabled ? 'Enabled' : 'Disabled'} · key {provider.apiKeyMasked || 'missing'}
                   </div>
+                  <div className="small muted">
+                    {provider.phiApproved
+                      ? `Approved for PHI${
+                          provider.phiApprovedAt
+                            ? ` since ${new Date(provider.phiApprovedAt).toLocaleDateString()}`
+                            : ''
+                        }${provider.phiApprovalNote ? ` · ${provider.phiApprovalNote}` : ''}`
+                      : 'Not approved for PHI: skipped by production chat'}
+                  </div>
                 </div>
                 <div className="row">
                   <button onClick={() => move(index, -1)} disabled={index === 0}>
@@ -204,6 +220,8 @@ export function PlatformAi() {
                         outputTokenCostPerMillion: provider.outputTokenCostPerMillion,
                         maxOutputTokens: provider.maxOutputTokens,
                         enabled: provider.enabled,
+                        phiApproved: provider.phiApproved,
+                        phiApprovalNote: provider.phiApprovalNote ?? '',
                       });
                     }}
                   >
@@ -314,6 +332,27 @@ export function PlatformAi() {
           />{' '}
           Enabled
         </label>
+        <div style={{ marginTop: 12 }}>
+          <label className="small">
+            <input
+              type="checkbox"
+              checked={form.phiApproved}
+              onChange={(event) => setForm({ ...form, phiApproved: event.target.checked })}
+            />{' '}
+            Approved for PHI (BAA on file)
+          </label>
+          <p className="small muted" style={{ margin: '4px 0 8px' }}>
+            In production, report chat only sends report text and patient questions to providers
+            with this box checked. Only check it once a signed BAA covers this vendor and model.
+          </p>
+          <Field label="BAA reference (agreement name, date, or ticket)">
+            <input
+              value={form.phiApprovalNote}
+              maxLength={500}
+              onChange={(event) => setForm({ ...form, phiApprovalNote: event.target.value })}
+            />
+          </Field>
+        </div>
         <div className="row" style={{ marginTop: 12 }}>
           <button
             className="primary"

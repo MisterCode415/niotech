@@ -13,6 +13,7 @@ import {
   paymentAccounts,
   paymentEvents,
   payments,
+  phiAccessEvents,
   users,
 } from '../db/schema.js';
 import { call, login, auth, multipartBody, SAMPLE_PDF, TEST_ADDRESS } from './harness.js';
@@ -252,6 +253,29 @@ describe('order workflow: clinician branch', () => {
     });
     expect(download.statusCode).toBe(200);
     expect(download.rawPayload.subarray(0, 4).toString()).toBe('%PDF');
+
+    // The model's draft is the clinician's working note; the patient's copy never carries it.
+    expect(released.review).not.toBeNull();
+    expect(Object.keys(released.review!)).not.toContain('aiDraft');
+    expect(Object.keys(released.review!)).not.toContain('aiModel');
+
+    // Every PHI read above left a row: the doctor's review, the patient's view, and the PDF.
+    const trailRows = await withPlatformScope((tx) =>
+      tx
+        .select({
+          actorRole: phiAccessEvents.actorRole,
+          resourceType: phiAccessEvents.resourceType,
+          action: phiAccessEvents.action,
+        })
+        .from(phiAccessEvents)
+        .where(eq(phiAccessEvents.orderId, orderId)),
+    );
+    const seen = trailRows.map((row) => `${row.actorRole}:${row.resourceType}:${row.action}`);
+    expect(seen).toContain('doctor:review:view');
+    expect(seen).toContain('patient:order_detail:view');
+    expect(seen).toContain('patient:result_file:download');
+    // The pre-release patient view exposed nothing clinical, so it is not an access.
+    expect(seen.filter((entry) => entry === 'patient:order_detail:view')).toHaveLength(1);
   });
 });
 

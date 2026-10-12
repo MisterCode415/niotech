@@ -24,6 +24,7 @@ import { recordEvent } from '../services/orderWorkflow.js';
 import { storage } from '../services/storage.js';
 import { markReceivedByPatient, markSampleSent } from '../services/kitCustody.js';
 import { getOrCreateExtraction } from '../services/pdfExtract.js';
+import { recordPhiAccess } from '../services/phiAudit.js';
 import {
   fileIdsForOrder,
   loadConversation,
@@ -200,16 +201,31 @@ export async function patientRoutes(app: FastifyInstance) {
     const { slug, orderId } = orderParam.parse(request.params);
     const ctx = requireMembership(request, slug, ['patient']);
 
-    const detail = await withTenant(ctx, (tx) => getOrderDetail(tx, ctx.businessUnitId, orderId));
-    if (detail.order.patientId !== ctx.userId)
-      throw forbidden('This order belongs to another patient');
+    const detail = await withTenant(ctx, async (tx) => {
+      const found = await getOrderDetail(tx, ctx.businessUnitId, orderId);
+      if (found.order.patientId !== ctx.userId)
+        throw forbidden('This order belongs to another patient');
+      // Only a released order exposes clinical content, so only that view is a PHI access.
+      if (found.order.status === 'results_released') {
+        await recordPhiAccess(tx, request, ctx, {
+          resourceType: 'order_detail',
+          orderId,
+          action: 'view',
+        });
+      }
+      return found;
+    });
 
     // Results are only visible once released; before that the doctor's queue owns them.
     const released = detail.order.status === 'results_released';
+    // The model's draft is the clinician's working note, never the patient's copy.
+    const patientReview = detail.review
+      ? (({ aiDraft: _aiDraft, aiModel: _aiModel, ...rest }) => rest)(detail.review)
+      : null;
     return {
       ...detail,
       results: released ? detail.results : [],
-      review: released ? detail.review : null,
+      review: released ? patientReview : null,
       // The QR token is the kit's credential; the patient sees their own, nobody else's.
       kits: detail.kits,
     };
@@ -297,6 +313,12 @@ export async function patientRoutes(app: FastifyInstance) {
         .where(and(eq(labResults.orderId, orderId), eq(files.id, fileId)))
         .limit(1);
       if (!row) throw notFound('Result file not found');
+      await recordPhiAccess(tx, request, ctx, {
+        resourceType: 'result_file',
+        resourceId: fileId,
+        orderId,
+        action: 'download',
+      });
       return row;
     });
 
@@ -319,6 +341,12 @@ export async function patientRoutes(app: FastifyInstance) {
       const belongs = detail.results.some((result) => result.fileId === fileId);
       if (!belongs) throw notFound('Result file not found');
       const extracted = await getOrCreateExtraction(tx, ctx.businessUnitId, fileId);
+      await recordPhiAccess(tx, request, ctx, {
+        resourceType: 'result_text',
+        resourceId: fileId,
+        orderId,
+        action: 'extract',
+      });
       return extracted;
     });
   });
@@ -330,7 +358,13 @@ export async function patientRoutes(app: FastifyInstance) {
       const detail = await getOrderDetail(tx, ctx.businessUnitId, orderId);
       if (detail.order.patientId !== ctx.userId) throw forbidden('This order belongs to another patient');
       if (detail.order.status !== 'results_released') throw forbidden('Results have not been released yet');
-      return loadConversation(tx, orderId);
+      const conversation = await loadConversation(tx, orderId);
+      await recordPhiAccess(tx, request, ctx, {
+        resourceType: 'conversation',
+        orderId,
+        action: 'view',
+      });
+      return conversation;
     });
   });
 
@@ -344,6 +378,11 @@ export async function patientRoutes(app: FastifyInstance) {
       if (detail.order.patientId !== ctx.userId) throw forbidden('This order belongs to another patient');
       if (detail.order.status !== 'results_released') throw forbidden('Results have not been released yet');
       const fileIds = await fileIdsForOrder(tx, orderId);
+      await recordPhiAccess(tx, request, ctx, {
+        resourceType: 'conversation',
+        orderId,
+        action: 'chat',
+      });
       return prepareReportChat(tx, {
         businessUnitId: ctx.businessUnitId,
         orderId,
