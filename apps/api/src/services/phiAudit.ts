@@ -7,7 +7,8 @@ export interface PhiAccessInput {
   resourceType: PhiResourceType;
   /** The file, review, or conversation touched; omitted for whole-order views. */
   resourceId?: string | null;
-  orderId: string;
+  /** Null for events that are not about one order, such as a patient-wide disclosure export. */
+  orderId?: string | null;
   action: PhiAccessAction;
 }
 
@@ -29,7 +30,7 @@ export async function recordPhiAccess(
     actingPlatformAdmin: Boolean(ctx.actingAsPlatformAdmin),
     resourceType: input.resourceType,
     resourceId: input.resourceId ?? null,
-    orderId: input.orderId,
+    orderId: input.orderId ?? null,
     action: input.action,
     requestId: String(request.id),
     ip: request.ip,

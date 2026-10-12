@@ -11,6 +11,8 @@ export interface AuthIdentity {
   name?: string;
   /** Auth0 Organization id, when the token was issued in an organization context. */
   orgId?: string;
+  /** True when the session completed multi-factor authentication. Never set by the dev provider. */
+  mfa?: boolean;
 }
 
 export interface CreateOrganizationInput {

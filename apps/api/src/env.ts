@@ -67,6 +67,15 @@ const envSchema = z.object({
     .default('false')
     .transform((value) => value === 'true'),
   /**
+   * When true (Auth0 only), staff roles (bu_admin, doctor, lab, fulfillment, platform admin)
+   * must present a token from a session that completed MFA. Leave false until the post-login
+   * Action that stamps the MFA claim is deployed, or every staff member is locked out.
+   */
+  REQUIRE_STAFF_MFA: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /**
    * Encrypts LLM provider API keys at rest. Production must not use the committed default.
    */
   APP_ENCRYPTION_KEY: z.string().default('dev-only-encryption-key-change-me'),

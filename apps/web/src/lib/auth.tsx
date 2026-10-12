@@ -9,10 +9,21 @@ import {
 } from 'react';
 import { useAuth0 } from '@auth0/auth0-react';
 import type { MembershipRole, BusinessUnitStatus } from '@nio/shared';
-import { api, getToken, setActAsResolver, setToken, setTokenResolver } from './api';
+import {
+  api,
+  getToken,
+  setActAsResolver,
+  setMfaStepUpHandler,
+  setToken,
+  setTokenResolver,
+} from './api';
 import { useAuthConfig } from './authConfig';
 import { actAsHeaderFor } from './workspace';
 import { safeReturnTo } from './returnTo';
+
+/** Matches the authentication context the post-login Action turns into an MFA challenge. */
+const MFA_ACR_VALUE = 'http://schemas.openid.net/pape/policies/2007/06/multi-factor';
+const MFA_ATTEMPT_KEY = 'nio.mfaStepUpAt';
 
 export interface Membership {
   businessUnitId: string;
@@ -161,6 +172,26 @@ function Auth0Auth({ children }: { children: ReactNode }) {
     });
     return () => setTokenResolver(null);
   }, [isAuthenticated, getAccessTokenSilently, activeOrganizationId]);
+
+  // Staff sessions without MFA are refused by the API with MFA_REQUIRED. Send the user back
+  // through Auth0 asking for the MFA authentication context, then return to the same page. The
+  // timestamp stops a tenant that cannot satisfy the request from looping forever: the second
+  // refusal inside a minute is shown as an ordinary error instead of another redirect.
+  useEffect(() => {
+    setMfaStepUpHandler(() => {
+      const last = Number(sessionStorage.getItem(MFA_ATTEMPT_KEY) ?? 0);
+      if (Date.now() - last < 60_000) return;
+      sessionStorage.setItem(MFA_ATTEMPT_KEY, String(Date.now()));
+      void loginWithRedirect({
+        appState: { returnTo: safeReturnTo(window.location.pathname + window.location.search) },
+        authorizationParams: {
+          acr_values: MFA_ACR_VALUE,
+          ...(activeOrganizationId ? { organization: activeOrganizationId } : {}),
+        },
+      });
+    });
+    return () => setMfaStepUpHandler(null);
+  }, [loginWithRedirect, activeOrganizationId]);
 
   const refresh = useCallback(async () => {
     if (!isAuthenticated) {

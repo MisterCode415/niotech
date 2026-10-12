@@ -1,6 +1,7 @@
 import { NavLink, Outlet, Link } from 'react-router-dom';
 import { ROLE_LABELS, workspacePath, type MembershipRole } from '@nio/shared';
 import { useAuth } from '../lib/auth';
+import { useIdleLogout } from '../lib/idleLogout';
 import { useWorkspace } from '../lib/workspace';
 import { NotificationBell } from './NotificationBell';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
@@ -24,6 +25,7 @@ function navFor(role: MembershipRole, slug: string): NavItem[] {
         { to: at('/payments'), label: 'Payments' },
         { to: at('/ai'), label: 'Report AI' },
         { to: at('/marketing'), label: 'Marketing page' },
+        { to: at('/audit'), label: 'Disclosures' },
       ];
     case 'patient':
       return [
@@ -46,6 +48,7 @@ export function Layout() {
   const { me, logout } = useAuth();
   const workspace = useWorkspace(me);
   const items = workspace ? navFor(workspace.role, workspace.slug) : [];
+  const idle = useIdleLogout({ enabled: Boolean(me), onTimeout: logout });
 
   return (
     <div className="app-shell">
@@ -83,6 +86,18 @@ export function Layout() {
           </button>
         </div>
       </header>
+
+      {idle.secondsLeft !== null ? (
+        <div className="acting-banner" role="alert">
+          <span>
+            You will be signed out in <strong>{idle.secondsLeft}</strong> seconds because of
+            inactivity.
+          </span>
+          <button className="btn small" onClick={idle.keepAlive}>
+            Stay signed in
+          </button>
+        </div>
+      ) : null}
 
       {workspace?.isActingAs ? (
         <div className="acting-banner">

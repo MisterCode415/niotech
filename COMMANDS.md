@@ -454,6 +454,44 @@ auth0 actions deploy '<action-id>'
 Use the Auth0 dashboard or CLI trigger-binding command appropriate to the installed CLI version to
 attach the deployed Action to the post-login flow.
 
+## Staff MFA and session limits
+
+The API can require multi-factor authentication for staff roles (`bu_admin`, `doctor`, `lab`,
+`fulfillment`, and platform admins). Patients are never challenged. It is off by default, so
+deploying the code locks nobody out. Auth0 is changed by a script you run, not by the deploy.
+
+Reauthorize the CLI with the extra scopes, then look at the plan before applying it:
+
+```bash
+auth0 login --domain qinio-dev.us.auth0.com --scopes \
+  'read:tenant_settings update:tenant_settings read:guardian_factors update:guardian_factors read:actions create:actions update:actions'
+
+./deploy/auth0-hardening.sh            # prints the plan, changes nothing
+APPLY=1 ./deploy/auth0-hardening.sh    # applies it
+```
+
+`APPLY=1` does three things: sets tenant session limits (8 hours idle, 24 hours absolute; override
+with `IDLE_SESSION_HOURS` and `ABSOLUTE_SESSION_HOURS`), enables the authenticator-app (OTP)
+factor, and redeploys the post-login Action so tokens carry a `https://niotech.io/mfa` claim and the
+Action can challenge when the app asks for MFA.
+
+Then turn enforcement on, on the VM:
+
+```bash
+cd ~/nio-platform
+grep -q '^REQUIRE_STAFF_MFA=' .env.production \
+  && sed -i 's/^REQUIRE_STAFF_MFA=.*/REQUIRE_STAFF_MFA=true/' .env.production \
+  || echo 'REQUIRE_STAFF_MFA=true' >> .env.production
+MIGRATION_DATABASE_URL="$ADMIN_DATABASE_URL" ./deploy/deploy.sh
+```
+
+Each staff member is redirected to Auth0 on their next request to enroll an authenticator app, and
+is challenged after that. Keep one platform-admin session open while you verify. If anyone is
+locked out, set `REQUIRE_STAFF_MFA=false` and run the deploy again.
+
+The browser signs a user out after 15 minutes without activity (build-time
+`VITE_IDLE_TIMEOUT_MINUTES` changes this), with a warning 60 seconds before.
+
 ## Build, migrate, bootstrap, and start
 
 From the VM, pass the administrator URL only to the deployment process:

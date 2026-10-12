@@ -619,6 +619,10 @@ Email failures never block a clinical transition — a result is recorded whethe
 server is reachable, and the in-app notification lands regardless. That makes a broken relay quiet,
 so the API logs a warning at startup when a remote relay has no credentials configured.
 
+### MFA
+Staff MFA: It is off by default and turns on with REQUIRE_STAFF_MFA=true. When on, an Auth0 session without MFA gets 403 MFA_REQUIRED for the bu_admin, doctor, lab, fulfillment and platform admin roles. The web app then sends the user back through login asking for MFA. Patients and the dev provider are never blocked.
+
+
 ### Backups
 
 Two things hold state. Flexible Server backs up the database itself with 7-day point-in-time

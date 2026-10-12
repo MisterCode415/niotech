@@ -7,6 +7,7 @@ import { authProvider } from '../auth/index.js';
 import { sendInvitationEmail } from '../services/notifications.js';
 import { withPlatformScope, withTenant } from '../db/client.js';
 import { conflict } from '../lib/errors.js';
+import { sanitizeMarketingHtml } from '../lib/sanitizeHtml.js';
 import {
   marketingPages,
   memberships,
@@ -49,7 +50,7 @@ export async function publicRoutes(app: FastifyInstance) {
 
     return {
       businessUnit: { name: businessUnit.name, slug: businessUnit.slug },
-      page: page ?? null,
+      page: page ? { ...page, bodyHtml: sanitizeMarketingHtml(page.bodyHtml) } : null,
     };
   });
 

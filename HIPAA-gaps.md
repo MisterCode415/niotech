@@ -5,7 +5,7 @@ signing a Business Associate Agreement covers their infrastructure. It does not 
 this application HIPAA-compliant. Use this file to sequence work toward a posture
 that can be assessed.
 
-Last updated: 2026-10-12 (step 1: access audit, log hygiene, `aiDraft` strip, provider approval gate).
+Last updated: 2026-10-12 (steps 1 and 2 of the code work: access audit, log hygiene, `aiDraft` strip, provider approval gate; then marketing HTML sanitizing, idle logout, per-tab tokens, opt-in staff MFA, and the disclosures export).
 
 ## What HIPAA is asking of the application
 
@@ -42,6 +42,11 @@ At a high level, a covered entity / BA handling ePHI needs:
 | Request ids and redacted logs | `genReqId` + pino `redact`/`req` serializer in `app.ts`, `lib/logSafe.ts` | UUID request ids are echoed as `x-request-id` and tie log lines to audit rows. Auth/cookie/integration/Stripe headers and `*.email` are redacted, URLs log as route patterns, and production error logs carry only error name/code/status |
 | Patient API omits `aiDraft` / `aiModel` | `routes/patient.ts` | The model's draft is the clinician's working note and is no longer in the patient payload |
 | PHI-approved LLM providers only in production | `phi_approved` on `platform_llm_providers`, `eligibleProviderRows()` in `reportChat.ts`, Platform AI page | With `NODE_ENV=production`, chat skips every provider a platform admin has not marked as BAA-covered (with a reference note). With none approved, chat reports as not configured and no PHI leaves the system |
+| Marketing HTML is sanitized on write and on read | `lib/sanitizeHtml.ts`, used by `routes/businessUnit.ts` and `routes/public.ts` | An allowlist drops scripts, iframes, forms, event handlers, and `javascript:` links. `<style>` is kept but CSS is scrubbed of `@import`, `expression()`, and non-https `url()`. Old pages are cleaned when served, so nothing stored earlier reaches a browser unfiltered. The admin preview shows the server-cleaned copy |
+| Idle logout in the SPA | `apps/web/src/lib/idleLogout.ts`, mounted in `Layout.tsx` | Signs out after 15 idle minutes (`VITE_IDLE_TIMEOUT_MINUTES`) with a 60-second warning. Activity is shared across tabs, so one busy tab keeps the others alive |
+| Tokens are per tab, not persistent | `apps/web/src/lib/api.ts` | The dev token lives in `sessionStorage`, and any older `localStorage` token is deleted at load. Dev tokens now last 8 hours instead of 12 |
+| Staff MFA, opt-in | `assertStaffMfa()` in `auth/context.ts`, `deploy/auth0-post-login-action.js`, `auth.tsx`, `deploy/auth0-hardening.sh` | With `REQUIRE_STAFF_MFA=true`, an Auth0 session without MFA gets `403 MFA_REQUIRED` for `bu_admin`, `doctor`, `lab`, `fulfillment`, and platform admin (including act-as). The SPA then sends the user through login asking for MFA, and the Action enrolls or challenges. Patients and the dev provider are never blocked. Default is off so deploying the code cannot lock anyone out |
+| Accounting of disclosures export | `routes/audit.ts`, `AdminAudit.tsx` (`/w/:slug/admin/audit`) | A `bu_admin` can look up a patient email or order and get a time-ordered timeline merged from `phi_access_events`, `order_events`, and `report_conversations`, as JSON or CSV. CSV cells that start with a formula character are neutralised. Every lookup and export is itself recorded (`disclosure_export`) in the same transaction |
 
 ## Gaps
 
@@ -63,8 +68,9 @@ conversation, when, and from which request id and IP (see the table above).
 
 **Still open:**
 
-- No retention policy and no export, so an accounting-of-disclosures request still needs a
-  hand-written query.
+- No retention policy. The accounting-of-disclosures export now exists for `bu_admin`
+  (per patient or order, capped at 5,000 rows per source). There is no platform-wide export
+  and no export across several patients.
 - Fulfillment users do not read PHI today, but the list and queue endpoints that return
   patient names (`doctor/queue`, `lab/queue`, `bu_admin` order list) are not audited.
 - The audit write is a plain insert; there is no tamper-evident chaining or off-box copy, so a
@@ -73,19 +79,39 @@ conversation, when, and from which request id and IP (see the table above).
 **Risk:** the audit trail can be rewritten by someone with schema privileges, and exports
 are manual.
 
-### 3. MFA and idle session timeout are not enforced in-app
+### 3. MFA and session limits: code is in, enforcement depends on configuration
 
-Production auth is Auth0-delegated. MFA and absolute/idle session limits are tenant
-policy, not codified here. Dev auth issues long-lived JWTs stored in `localStorage`.
+**Done in code:** the SPA signs out after idle time, and the API can refuse staff sessions
+that did not complete MFA (`REQUIRE_STAFF_MFA`).
 
-**Risk:** a shared workstation or stolen laptop stays signed in; MFA can be turned off
-in the Auth0 tenant without the app noticing.
+**Still open, and honest about the limits:**
 
-### 4. Dev auth and `localStorage` tokens
+- Enforcement is **off until `REQUIRE_STAFF_MFA=true` is set** and the updated post-login
+  Action is deployed. Until then nothing is enforced.
+- MFA is only as real as the Auth0 side. The Action sets the claim only after a challenge,
+  and the API trusts that claim. Someone who can edit the Action or the tenant can weaken it.
+  The Action's Management API calls (`challengeWithAny`, `enrollWith`) were written from the
+  documentation and have **not been run against a live tenant**; test with a throwaway staff
+  user first.
+- Idle and absolute session limits are Auth0 tenant settings. `deploy/auth0-hardening.sh`
+  sets them (dry run by default) but nobody has run it; the app cannot see the tenant values.
+- Idle logout is browser-side. It does not revoke the token; a copied token is valid until
+  it expires.
+- `deploy/auth0-hardening.sh` and the Action update are for you to run; see `COMMANDS.md`.
 
-`AUTH_PROVIDER=dev` mints tokens for any known email with no password. The SPA stores
-the access token in `localStorage` (`nio.accessToken`). XSS on the marketing HTML
-(gap 7) can exfiltrate it.
+**Risk:** a stolen but unexpired token still works; MFA can be loosened in the tenant.
+
+### 4. Dev auth: partly addressed
+
+`AUTH_PROVIDER=dev` mints tokens for any known email with no password.
+
+**Done:** the SPA no longer keeps the token in `localStorage` (it is per-tab
+`sessionStorage`, and an older `localStorage` token is purged), and dev tokens expire after
+8 hours. XSS on marketing HTML is closed off by the sanitizer (gap 7).
+
+**Still open:** a token in `sessionStorage` is still readable by any script that runs on the
+page, so an XSS elsewhere would still reach it. The Auth0 path uses the SDK's default in-memory
+cache, which is not persisted but is also reachable by script on the page.
 
 **Risk:** acceptable only on throwaway local/dev. Fatal if a production deploy ever
 boots with `AUTH_PROVIDER=dev` (boot guard exists; do not weaken it).
@@ -115,12 +141,16 @@ for `order_events`, notifications, payment payloads, or (new) chat logs.
 **Risk:** ransomware or disk loss loses lab PDFs; over-retention of chat logs expands
 breach scope.
 
-### 7. Unsanitized marketing HTML
+### 7. Marketing HTML: addressed, with limits
 
-BU admins can publish raw HTML that the storefront renders as-is. Trusted operators
-only, for now.
+BU admins' HTML is now run through an allowlist sanitizer on save and when served.
 
-**Risk:** stored XSS → token theft (gap 4) → PHI via the patient API.
+**Limits:** it is an allowlist, not a proof; a future allowed tag or attribute needs review.
+Allowed `<style>` blocks can still restyle the whole page (for example to fake a login
+form's look), though they cannot run script or load non-https resources. The page is still
+rendered inline, not in a sandboxed iframe, so a sanitizer bug would be an XSS.
+
+**Risk:** reduced from stored XSS to a defacement/phishing-by-styling risk.
 
 ### 8. New with patient report AI
 
@@ -141,7 +171,7 @@ day one of the feature**, not as later surprises.
 - ~~Patient order detail API can include `aiDraft` after release~~ Fixed: the patient API drops `aiDraft` and `aiModel`. Doctors still receive both.
 - Stripe Dashboard / webhook payloads may contain patient email and shipping address.
 - Integrations API (`INTEGRATION_API_SECRET`) can create orders server-to-server — treat that secret as production-grade.
-- No automatic logoff in the SPA.
+- ~~No automatic logoff in the SPA~~ Added (15 minutes idle, see gap 3 for its limits).
 - No emergency-access (“break-glass”) procedure documented.
 
 ## Recommended sequence
@@ -151,11 +181,11 @@ new store we cannot audit.
 
 1. **Access audit + log hygiene (done, with the open items in gaps 2 and 5)** — append-only `phi_access_events` (actor, role, resource type/id, action, request id, timestamp). Scrub emails and payloads from application logs. Strip `aiDraft` from the patient API. Do this before any production PHI chat.
 2. **Encryption at rest** — CMK (or platform-managed key with rotation) on the PHI volume; encrypted Postgres (Flexible Server + customer key if required); keep `APP_ENCRYPTION_KEY` in the secret store, not the repo.
-3. **Session / MFA policy** — require Auth0 MFA for `bu_admin`, `doctor`, `lab`, `fulfillment`, and platform admins. Idle timeout + absolute session lifetime. Remove `localStorage` tokens when Auth0 is the only provider.
+3. **Session / MFA policy (code done; needs the Auth0 steps in `COMMANDS.md` and `REQUIRE_STAFF_MFA=true`)** — MFA guard, idle logout, and the `localStorage` removal are shipped. Absolute session lifetime and the MFA Action still have to be applied to the tenant.
 4. **Backups and retention** — offsite encrypted backup of the PHI volume; tested restore; retention/destruction for chat, extractions, notifications, and payment events.
-5. **Sanitize marketing HTML** — allowlist tags before self-serve onboarding.
+5. **Sanitize marketing HTML (done, see gap 7)** — allowlist on write and read.
 6. **LLM BAAs before production PHI chat** — do not point the cascade at a vendor without a BAA. Prefer a self-hosted or BAA-covered endpoint. Record the agreement in each provider's BAA reference field and tick “Approved for PHI” only then; the production gate (see above) keeps unapproved providers dark.
-7. **Operational** — workforce training, incident runbook, accounting-of-disclosures export from `phi_access_events` + `order_events` + `report_conversations`.
+7. **Operational** — workforce training, incident runbook. The accounting-of-disclosures export from `phi_access_events` + `order_events` + `report_conversations` is done (per patient or order, for `bu_admin`).
 
 ## Current-pass choices that limit (not close) AI gaps
 

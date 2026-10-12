@@ -79,8 +79,9 @@ export const PHI_RESOURCE_TYPES = [
   'result_text',
   'conversation',
   'review',
+  'disclosure_export',
 ] as const;
-export const PHI_ACCESS_ACTIONS = ['view', 'download', 'extract', 'chat'] as const;
+export const PHI_ACCESS_ACTIONS = ['view', 'download', 'extract', 'chat', 'export'] as const;
 export type PhiResourceType = (typeof PHI_RESOURCE_TYPES)[number];
 export type PhiAccessAction = (typeof PHI_ACCESS_ACTIONS)[number];
 export const phiResourceTypeEnum = pgEnum('phi_resource_type', PHI_RESOURCE_TYPES);

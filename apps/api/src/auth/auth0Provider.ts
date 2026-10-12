@@ -124,12 +124,18 @@ export class Auth0Provider implements AuthProvider {
           (payload['https://niotech.io/name'] as string)) ||
         undefined;
 
+      // The post-login Action stamps this claim when the session performed MFA; `amr` is the
+      // standard fallback some tenants emit on their own.
+      const amr = Array.isArray(payload.amr) ? (payload.amr as unknown[]) : [];
+      const mfa = payload['https://niotech.io/mfa'] === true || amr.includes('mfa');
+
       return {
         provider: 'auth0',
         subject: payload.sub,
         email,
         name,
         orgId: typeof payload.org_id === 'string' ? payload.org_id : undefined,
+        mfa,
       };
     } catch (error) {
       if (error instanceof HttpError) throw error;

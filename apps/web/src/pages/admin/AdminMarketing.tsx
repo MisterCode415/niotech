@@ -70,6 +70,8 @@ export function AdminMarketing() {
 
   if (isLoading) return <Loading what="marketing page" />;
 
+  const savedHtml = (data?.published ?? data?.versions[0])?.bodyHtml ?? '';
+
   return (
     <>
       <div className="page-header">
@@ -93,6 +95,11 @@ export function AdminMarketing() {
           <Field label="Headline">
             <input value={headline} onChange={(e) => setHeadline(e.target.value)} />
           </Field>
+          <p className="small muted" style={{ marginTop: 0 }}>
+            For patient safety, scripts, forms, iframes, and event handlers (such as onclick) are
+            removed when you save. Styles, images, links, and radio/checkbox controls are kept.
+            After saving, the editor and preview show exactly what visitors will get.
+          </p>
           <Field label="Body HTML">
             <textarea
               value={bodyHtml}
@@ -116,9 +123,13 @@ export function AdminMarketing() {
 
         <div className="stack">
           <div className="card">
-            <div className="card-title">Preview</div>
+            <div className="card-title">Preview (last saved version)</div>
             <h2>{headline || title}</h2>
-            <div className="marketing-body" dangerouslySetInnerHTML={{ __html: bodyHtml }} />
+            {/* Only server-sanitized HTML is ever rendered; unsaved editor text is never injected. */}
+            <div
+              className="marketing-body"
+              dangerouslySetInnerHTML={{ __html: savedHtml }}
+            />
           </div>
 
           <div className="card">

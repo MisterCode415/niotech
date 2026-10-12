@@ -8,7 +8,8 @@ import {
 } from '@nio/shared';
 import { withPlatformScope } from '../db/client.js';
 import { businessUnits, memberships, platformAdmins, users } from '../db/schema.js';
-import { badRequest, unauthorized, forbidden, notFound } from '../lib/errors.js';
+import { env } from '../env.js';
+import { badRequest, unauthorized, forbidden, notFound, HttpError } from '../lib/errors.js';
 import { authProvider } from './index.js';
 import type { AuthIdentity } from './provider.js';
 
@@ -217,6 +218,35 @@ export function requireActor(request: FastifyRequest): Actor {
   return request.actor;
 }
 
+/** Roles that touch PHI or run the platform. Patients are deliberately not on this list. */
+const MFA_ROLES: ReadonlySet<string> = new Set([
+  'bu_admin',
+  'doctor',
+  'lab',
+  'fulfillment',
+  'platform_admin',
+]);
+
+/**
+ * Staff sessions must have completed MFA once REQUIRE_STAFF_MFA is on. The SPA reacts to the
+ * `MFA_REQUIRED` code by sending the user back through Auth0 with a step-up request. The dev
+ * provider cannot perform MFA, so it is exempt (and is refused outright in production anyway).
+ */
+export function assertStaffMfa(
+  actor: Pick<Actor, 'identity'>,
+  role: MembershipRole | 'platform_admin',
+  required: boolean = env.REQUIRE_STAFF_MFA,
+): void {
+  if (!required || actor.identity.provider !== 'auth0') return;
+  if (!MFA_ROLES.has(role)) return;
+  if (actor.identity.mfa) return;
+  throw new HttpError(
+    403,
+    'Multi-factor authentication is required for this role',
+    'MFA_REQUIRED',
+  );
+}
+
 /** Memberships the current token may exercise; an Auth0 token is confined to its `org_id`. */
 export function sessionMemberships(actor: Actor): ActorMembership[] {
   if (actor.identity.provider !== 'auth0') return actor.memberships;
@@ -242,6 +272,7 @@ export function requirePlatformAdmin(request: FastifyRequest): Actor {
   if (actor.identity.provider === 'auth0' && actor.identity.orgId) {
     throw forbidden('Switch to the platform workspace before using platform administration');
   }
+  assertStaffMfa(actor, 'platform_admin');
   return actor;
 }
 
@@ -272,6 +303,8 @@ export function requireMembership(
       throw forbidden(`Requires role: ${acceptedRoles.join(' or ')}`);
     }
     if (!actor.userId) throw unauthorized();
+    // The person is a platform admin whatever role they are acting as.
+    assertStaffMfa(actor, 'platform_admin');
     return {
       actor,
       userId: actor.userId,
@@ -300,6 +333,7 @@ export function requireMembership(
   }
 
   if (!actor.userId) throw unauthorized();
+  assertStaffMfa(actor, membership.role);
 
   return {
     actor,

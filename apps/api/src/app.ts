@@ -19,6 +19,7 @@ import { labRoutes } from './routes/lab.js';
 import { doctorRoutes } from './routes/doctor.js';
 import { scanRoutes } from './routes/scan.js';
 import { notificationRoutes } from './routes/notifications.js';
+import { auditRoutes } from './routes/audit.js';
 import { publicRoutes } from './routes/public.js';
 import { integrationRoutes } from './routes/integrations.js';
 import { paymentRoutes } from './routes/payments.js';
@@ -140,6 +141,7 @@ export async function buildApp() {
   await app.register(labRoutes);
   await app.register(doctorRoutes);
   await app.register(scanRoutes);
+  await app.register(auditRoutes);
   await app.register(notificationRoutes);
   await app.register(simulationRoutes);
 

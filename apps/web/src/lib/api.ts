@@ -1,17 +1,32 @@
 const TOKEN_KEY = 'nio.accessToken';
 
+/**
+ * The dev token lives in sessionStorage, so closing the tab or browser ends the session and the
+ * token is never shared with other tabs. It used to be in localStorage, which survives restarts;
+ * any leftover copy is deleted here at load so a stale credential cannot linger on a shared
+ * machine. (Auth0 tokens never touch storage at all; the SDK keeps them in memory.)
+ */
+function purgeLegacyToken(): void {
+  try {
+    localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // Storage unavailable; nothing to purge.
+  }
+}
+purgeLegacyToken();
+
 export function getToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY);
+  return sessionStorage.getItem(TOKEN_KEY);
 }
 
 export function setToken(token: string | null): void {
-  if (token) localStorage.setItem(TOKEN_KEY, token);
-  else localStorage.removeItem(TOKEN_KEY);
+  if (token) sessionStorage.setItem(TOKEN_KEY, token);
+  else sessionStorage.removeItem(TOKEN_KEY);
 }
 
 /**
- * How a request obtains its bearer token. The dev provider mints a long-lived token that is kept
- * in localStorage, but Auth0 access tokens expire and are refreshed by the SDK, which holds them
+ * How a request obtains its bearer token. The dev provider mints a token that is kept in
+ * sessionStorage, but Auth0 access tokens expire and are refreshed by the SDK, which holds them
  * in memory so a stolen localStorage entry cannot outlive the tab. Resolving the token per request
  * rather than reading it synchronously is what lets both live behind the same call sites.
  */
@@ -67,6 +82,22 @@ async function toError(response: Response): Promise<ApiError> {
   return new ApiError(response.status, message, code, details);
 }
 
+/**
+ * Called when the API answers 403 MFA_REQUIRED. The Auth0 backend registers a handler that sends
+ * the user back through login asking for MFA; the dev backend never registers one.
+ */
+let mfaStepUp: (() => void) | null = null;
+
+export function setMfaStepUpHandler(handler: (() => void) | null): void {
+  mfaStepUp = handler;
+}
+
+async function throwForResponse(response: Response): Promise<never> {
+  const error = await toError(response);
+  if (error.status === 403 && error.code === 'MFA_REQUIRED') mfaStepUp?.();
+  throw error;
+}
+
 export async function api<T = unknown>(
   path: string,
   options: { method?: string; body?: unknown; raw?: boolean } = {},
@@ -86,7 +117,7 @@ export async function api<T = unknown>(
         : undefined,
   });
 
-  if (!response.ok) throw await toError(response);
+  if (!response.ok) await throwForResponse(response);
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
@@ -94,6 +125,6 @@ export async function api<T = unknown>(
 /** Authenticated file fetch for PHI documents, which are never linkable directly. */
 export async function fetchBlobUrl(path: string): Promise<string> {
   const response = await fetch(path, { headers: await authHeaders(path) });
-  if (!response.ok) throw await toError(response);
+  if (!response.ok) await throwForResponse(response);
   return URL.createObjectURL(await response.blob());
 }

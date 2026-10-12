@@ -26,6 +26,7 @@ import { PlatformDashboard } from './pages/platform/PlatformDashboard';
 import { PlatformAi } from './pages/platform/PlatformAi';
 import { AdminOverview } from './pages/admin/AdminOverview';
 import { AdminAi } from './pages/admin/AdminAi';
+import { AdminAudit } from './pages/admin/AdminAudit';
 import { AdminPackages } from './pages/admin/AdminPackages';
 import { AdminMarketing } from './pages/admin/AdminMarketing';
 import { AdminTeam } from './pages/admin/AdminTeam';
@@ -170,6 +171,7 @@ export function App() {
           {workspaceRoute('bu_admin', '/w/:slug/admin/orders', <AdminOrders />)}
           {workspaceRoute('bu_admin', '/w/:slug/admin/payments', <AdminPayments />)}
           {workspaceRoute('bu_admin', '/w/:slug/admin/ai', <AdminAi />)}
+          {workspaceRoute('bu_admin', '/w/:slug/admin/audit', <AdminAudit />)}
           {workspaceRoute('patient', '/w/:slug/patient/orders', <PatientOrders />)}
           {workspaceRoute('patient', '/w/:slug/patient/orders/:orderId', <PatientOrderDetail />)}
           {workspaceRoute('fulfillment', '/w/:slug/fulfillment', <FulfillmentQueue />)}

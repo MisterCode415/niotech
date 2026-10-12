@@ -27,6 +27,7 @@ import {
   users,
 } from '../db/schema.js';
 import { badRequest, conflict, notFound } from '../lib/errors.js';
+import { sanitizeMarketingHtml } from '../lib/sanitizeHtml.js';
 import { dispatchNotifications, sendInvitationEmail } from '../services/notifications.js';
 import {
   activeMembersByRole,
@@ -89,7 +90,9 @@ export async function businessUnitRoutes(app: FastifyInstance) {
         .from(marketingPages)
         .orderBy(desc(marketingPages.version))
         .limit(20);
-      return { versions, published: versions.find((v) => v.isPublished) ?? null };
+      // Rows saved before sanitizing existed are cleaned on the way out as well.
+      const clean = versions.map((v) => ({ ...v, bodyHtml: sanitizeMarketingHtml(v.bodyHtml) }));
+      return { versions: clean, published: clean.find((v) => v.isPublished) ?? null };
     });
   });
 
@@ -119,7 +122,7 @@ export async function businessUnitRoutes(app: FastifyInstance) {
           version: nextVersion,
           title: input.title,
           headline: input.headline,
-          bodyHtml: input.bodyHtml,
+          bodyHtml: sanitizeMarketingHtml(input.bodyHtml),
           isPublished: input.publish,
         })
         .returning();

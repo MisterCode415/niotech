@@ -11,6 +11,8 @@ import type {
 
 const ISSUER = 'nio-dev';
 const AUDIENCE = 'nio-api';
+/** One working day. Shorter than it used to be (12h) so a forgotten dev session expires sooner. */
+export const DEV_TOKEN_TTL_SECONDS = 60 * 60 * 8;
 
 function secret(): Uint8Array {
   return new TextEncoder().encode(env.DEV_AUTH_SECRET);
@@ -23,7 +25,7 @@ function secret(): Uint8Array {
 export class DevAuthProvider implements AuthProvider {
   readonly name = 'dev' as const;
 
-  async issueToken(identity: AuthIdentity, ttlSeconds = 60 * 60 * 12): Promise<string> {
+  async issueToken(identity: AuthIdentity, ttlSeconds = DEV_TOKEN_TTL_SECONDS): Promise<string> {
     return new SignJWT({ email: identity.email, name: identity.name, org_id: identity.orgId })
       .setProtectedHeader({ alg: 'HS256' })
       .setSubject(identity.subject)
