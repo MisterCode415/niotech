@@ -52,9 +52,9 @@ At a high level, a covered entity / BA handling ePHI needs:
 
 Numbered so remediations can refer back. Severity is operational, not legal.
 
-### 1. Encryption at rest: code and scripts done, nothing applied yet
+### 1. Encryption at rest: applied on the dev stack
 
-**Done in code and scripts:** lab PDFs are written through an Azure Blob driver
+**Done (live on dev.qinio.co as of 2026-10-12):** lab PDFs are written through an Azure Blob driver
 (`services/storage.ts`) that authenticates with the VM's managed identity, never overwrites an
 existing blob, and is required in production (a production boot with `STORAGE_DRIVER=local`
 is refused). `deploy/azure-storage.sh` creates a GRS storage account with shared-key access
@@ -64,9 +64,11 @@ default; `CMK=1` (storage) and `PG_CMK_*` (database) switch to keys in your own 
 
 **Still open:**
 
-- **Nothing is live.** The script has not been run, the dev stack still keeps PDFs on the VM
-  disk, and the Azure CLI commands were written from documentation, not run against the
-  subscription. Expect to fix a flag or two on first run.
+- The existing PDFs were copied with `pnpm storage:migrate` and the app now reads and writes
+  blobs, but nobody has yet opened a PDF through the patient UI to confirm end to end, and the
+  old plaintext `nio-storage` volume is still on the VM disk until you remove it (the runbook
+  says after 30 days).
+- The customer-managed-key path (`CMK=1`, `PG_CMK_*`) has never been run.
 - The dev stack uses Microsoft-managed keys. Customer-managed keys exist only as options for
   the future production stack, and a Flexible Server's key and geo-redundancy can only be chosen
   when it is created, so the current server cannot be converted.
@@ -149,23 +151,25 @@ patient data would still leak it.
 **Risk:** ops tools, log drains, and support screenshots become a second PHI store
 without a BAA or retention control.
 
-### 6. Backups and retention: backup side done in code, retention side open
+### 6. Backups and retention: backups applied on the dev stack, retention side open
 
-**Done in code and scripts (not yet applied):**
+**Done (live on dev.qinio.co as of 2026-10-12):**
 
 - Database: point-in-time restore raised to 35 days (`azure-provision.sh` converges existing
-  servers), plus a monthly `pg_dump` (`deploy/db-dump.sh`, systemd timer) kept 7 years in a
-  write-once, GRS blob container, using a read-only `nio_backup` login.
+  servers), plus a monthly `pg_dump` (`deploy/db-dump.sh`, systemd timer, next run 2026-11-01)
+  kept 7 years in a write-once, GRS blob container in its own storage account (Azure does not
+  allow write-once on an account that has blob point-in-time restore), using a read-only
+  `nio_backup` login. The first dump ran and was spot-checked: orders, users and files had rows.
 - PDFs: versioning, 30-day soft delete, and 29-day blob point-in-time restore on a GRS account.
 - `RUNBOOK-backup-restore.md`: how to list backups, restore the database and PDFs, run a
   quarterly restore test, and lock the write-once policy.
 
 **Still open:**
 
-- **Nothing has been run, and no restore has ever been tested.** Do the quarterly restore test
-  in the runbook before relying on any of this.
-- The write-once policy is created **unlocked**; until you lock it (irreversible), an
-  administrator can weaken it.
+- **No restore has ever been tested.** Do the quarterly restore test in the runbook before
+  relying on any of this.
+- The write-once policy is **unlocked** and the first dump holds only dev data; until it is
+  locked (irreversible), an administrator can weaken it.
 - `nio_backup` has `BYPASSRLS` (a dump under row-level security would be empty), so its
   password is a high-value secret; it is read-only and kept in `/etc/nio/backup.env` (root-only).
 - Dumps are kept 7 years and cannot be deleted, so they will outlive any later destruction

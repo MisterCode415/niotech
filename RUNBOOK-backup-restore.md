@@ -18,8 +18,9 @@ point-in-time restore, so PDFs (restore, versioning) and database dumps (write-o
 | Database | Monthly `pg_dump` in `$BK_NAME/db-backups` (write-once, GRS) | 7 years |
 | Lab PDFs | `$SA_NAME/phi-files` container: versioning, soft delete, blob PITR (GRS) | 29 to 30 days |
 
-Nothing here has been run for real until you have done the quarterly restore test below. A backup
-you have not restored is a hope, not a backup.
+Setup (section 1) was run on the dev stack on 2026-10-12 and the first dump succeeded, but no
+restore has been tested. Do the quarterly restore test below. A backup you have not restored is a
+hope, not a backup.
 
 ## 1. One-time setup
 

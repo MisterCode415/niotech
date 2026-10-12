@@ -171,6 +171,21 @@ assign_role() {
 assign_role "$SA_ID/blobServices/default/containers/$PHI_CONTAINER" "$SA_NAME/$PHI_CONTAINER"
 assign_role "$BK_ID/blobServices/default/containers/$BACKUP_CONTAINER" "$BK_NAME/$BACKUP_CONTAINER"
 
+# Owner on the resource group does not include blob data access, so without this the runbook's
+# list and restore commands fail from the operator's own login.
+step "Operator access to blob data (for the runbook's list and restore commands)"
+OPERATOR_ID="$(az ad signed-in-user show --query id -o tsv 2>/dev/null || true)"
+if [[ -n "$OPERATOR_ID" ]]; then
+  for scope_label in "$SA_ID/blobServices/default/containers/$PHI_CONTAINER|$SA_NAME/$PHI_CONTAINER" \
+                     "$BK_ID/blobServices/default/containers/$BACKUP_CONTAINER|$BK_NAME/$BACKUP_CONTAINER"; do
+    az role assignment create --assignee-object-id "$OPERATOR_ID" --assignee-principal-type User \
+      --role "Storage Blob Data Contributor" --scope "${scope_label%%|*}" -o none
+    echo "    ${scope_label##*|}: Storage Blob Data Contributor (you)"
+  done
+else
+  echo "    could not read the signed-in user; grant yourself Storage Blob Data Contributor manually"
+fi
+
 # --- Optional customer-managed key ---------------------------------------------------------
 if [[ "$CMK" == "1" ]]; then
   step "Customer-managed key in Key Vault $KV_NAME"
