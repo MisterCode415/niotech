@@ -11,7 +11,8 @@ fail() { echo "error: $*" >&2; exit 1; }
 grep -Eq '^[A-Za-z_][A-Za-z0-9_]*=.*replace-me' .env.production &&
   fail "unreplaced 'replace-me' placeholders in active .env.production settings"
 
-read_env() { grep -E "^$1=" .env.production | head -1 | cut -d= -f2- | tr -d '"'; }
+# A missing key reads as empty; under pipefail a bare grep miss would end the script silently.
+read_env() { { grep -E "^$1=" .env.production || true; } | head -1 | cut -d= -f2- | tr -d '"'; }
 
 COMPOSE="docker compose -f docker-compose.prod.yml"
 if [[ "$(read_env BUNDLED_DB)" == "true" ]]; then
