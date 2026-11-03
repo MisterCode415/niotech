@@ -662,6 +662,7 @@ export const fileExtractions = pgTable(
     fileId: uuid('file_id')
       .notNull()
       .references(() => files.id, { onDelete: 'cascade' }),
+    /** Encrypted with `encryptPhi`. */
     extractedText: text('extracted_text').notNull(),
     method: fileExtractionMethodEnum('method').notNull(),
     pageCount: integer('page_count').notNull().default(1),
@@ -868,11 +869,14 @@ export const reportConversations = pgTable(
     patientUserId: uuid('patient_user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
+    /** Encrypted with `encryptPhi`; derived from the patient's first question. */
+    title: text('title'),
+    archivedAt: timestamp('archived_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    uniqueIndex('report_conversations_order_key').on(t.orderId),
+    index('report_conversations_order_idx').on(t.orderId, t.updatedAt),
     index('report_conversations_patient_idx').on(t.patientUserId),
   ],
 );
@@ -888,6 +892,7 @@ export const reportMessages = pgTable(
       .notNull()
       .references(() => reportConversations.id, { onDelete: 'cascade' }),
     role: reportMessageRoleEnum('role').notNull(),
+    /** Encrypted with `encryptPhi`. */
     content: text('content').notNull(),
     providerId: uuid('provider_id').references(() => platformLlmProviders.id, {
       onDelete: 'set null',

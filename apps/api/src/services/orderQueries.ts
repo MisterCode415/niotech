@@ -58,6 +58,7 @@ export async function getOrderDetail(tx: Tx, businessUnitId: string, orderId: st
       serial: kits.serial,
       externalKitId: kits.externalKitId,
       testTypeName: testTypes.name,
+      testTypeDescription: testTypes.description,
       sampleType: testTypes.sampleType,
     })
     .from(kits)

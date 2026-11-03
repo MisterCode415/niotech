@@ -18,6 +18,7 @@ import {
 import { storage } from '../services/storage.js';
 import { recordPhiAccess } from '../services/phiAudit.js';
 import { checkInAtLab } from '../services/kitCustody.js';
+import { scheduleExtraction } from '../services/pdfExtract.js';
 
 const slugParam = z.object({ slug: z.string() });
 const kitParam = slugParam.extend({ kitId: z.uuid() });
@@ -264,6 +265,7 @@ export async function labRoutes(app: FastifyInstance) {
       return { orderId: kit.orderId, routedTo: routed.routedTo, intents: routed.intents };
     });
 
+    scheduleExtraction(input.fileId);
     await dispatchNotifications(outcome.intents);
     return { kitStatus: 'lab_complete', orderId: outcome.orderId, routedTo: outcome.routedTo };
   });

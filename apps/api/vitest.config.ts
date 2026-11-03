@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['src/**/*.test.ts'],
+    setupFiles: ['src/test/setup.ts'],
     // The workflow tests share one Postgres database and drive global state, so they run serially.
     fileParallelism: false,
     sequence: { concurrent: false },

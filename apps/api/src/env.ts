@@ -91,6 +91,11 @@ const envSchema = z.object({
    * Encrypts LLM provider API keys at rest. Production must not use the committed default.
    */
   APP_ENCRYPTION_KEY: z.string().default('dev-only-encryption-key-change-me'),
+  /**
+   * Encrypts extracted report text and report-chat content at rest. Changing it makes existing
+   * rows unreadable, so it is rotated only with a re-encryption pass.
+   */
+  PHI_ENCRYPTION_KEY: z.string().default('dev-only-phi-encryption-key-change-me'),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -183,6 +188,14 @@ function assertDeployableConfig(): void {
     problems.push(
       'APP_ENCRYPTION_KEY is still the committed default. Generate one with: openssl rand -hex 32',
     );
+  }
+  if (env.PHI_ENCRYPTION_KEY === 'dev-only-phi-encryption-key-change-me') {
+    problems.push(
+      'PHI_ENCRYPTION_KEY is still the committed default. Generate one with: openssl rand -hex 32',
+    );
+  }
+  if (env.PHI_ENCRYPTION_KEY === env.APP_ENCRYPTION_KEY) {
+    problems.push('PHI_ENCRYPTION_KEY must differ from APP_ENCRYPTION_KEY.');
   }
   problems.push(...productionStorageProblems(env));
   if (env.PAYMENT_PROVIDER === 'stripe') {

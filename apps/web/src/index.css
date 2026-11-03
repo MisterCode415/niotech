@@ -635,6 +635,44 @@ tbody tr:hover {
   box-shadow: 0 0 0 1px var(--accent);
 }
 
+.thread-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.thread-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  padding: 4px 6px 4px 0;
+}
+.thread-item.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.thread-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  background: none;
+  border: none;
+  padding: 6px 10px;
+  text-align: left;
+  cursor: pointer;
+}
+.thread-title {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
 
 .address {
   font-style: normal;

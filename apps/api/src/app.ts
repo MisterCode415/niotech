@@ -31,6 +31,7 @@ import { stripeWebhookRoutes } from './routes/stripeWebhooks.js';
 import { simulationRoutes } from './routes/simulation.js';
 import { processCatalogSyncJobs, stripeEnabled } from './services/stripe.js';
 import { sweepPendingActivationInvites } from './services/activation.js';
+import { waitForScheduledExtractions } from './services/pdfExtract.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -206,6 +207,9 @@ export async function buildApp() {
     activationTimer.unref();
     app.addHook('onClose', async () => clearInterval(activationTimer));
   }
+
+  // Report extraction runs after the lab's response; let it finish before the pool closes.
+  app.addHook('onClose', async () => waitForScheduledExtractions());
 
   return app;
 }

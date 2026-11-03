@@ -1,9 +1,9 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { and, desc, eq } from 'drizzle-orm';
 import { z } from 'zod';
-import { createOrderSchema, payOrderSchema, reportChatSchema } from '@nio/shared';
+import { createOrderSchema, payOrderSchema, reportThreadMessageSchema } from '@nio/shared';
 import { requireMembership } from '../auth/context.js';
-import { withTenant } from '../db/client.js';
+import { withTenant, type Tx } from '../db/client.js';
 import {
   files,
   kits,
@@ -24,16 +24,22 @@ import { markReceivedByPatient, markSampleSent } from '../services/kitCustody.js
 import { getOrCreateExtraction } from '../services/pdfExtract.js';
 import { recordPhiAccess } from '../services/phiAudit.js';
 import {
+  archiveThread,
+  chatAvailability,
   fileIdsForOrder,
-  loadConversation,
+  listThreads,
+  loadThreadMessages,
   persistReportChat,
   prepareReportChat,
+  requireThread,
   runReportChat,
 } from '../services/reportChat.js';
+import { decryptPhi } from '../lib/phiCrypto.js';
 
 const slugParam = z.object({ slug: z.string() });
 const orderParam = slugParam.extend({ orderId: z.uuid() });
 const kitParam = orderParam.extend({ kitId: z.uuid() });
+const threadParam = orderParam.extend({ threadId: z.uuid() });
 
 export async function patientRoutes(app: FastifyInstance) {
   app.get('/api/bu/:slug/patient/orders', async (request) => {
@@ -305,43 +311,96 @@ export async function patientRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/api/bu/:slug/patient/orders/:orderId/conversation', async (request) => {
+  /** The patient's own released order, or the reason they cannot discuss it. */
+  async function releasedOrderFor(tx: Tx, ctx: { businessUnitId: string; userId: string }, orderId: string) {
+    const detail = await getOrderDetail(tx, ctx.businessUnitId, orderId);
+    if (detail.order.patientId !== ctx.userId) throw forbidden('This order belongs to another patient');
+    if (detail.order.status !== 'results_released') throw forbidden('Results have not been released yet');
+    return detail;
+  }
+
+  app.get('/api/bu/:slug/patient/orders/:orderId/threads', async (request) => {
     const { slug, orderId } = orderParam.parse(request.params);
     const ctx = requireMembership(request, slug, ['patient']);
     return withTenant(ctx, async (tx) => {
-      const detail = await getOrderDetail(tx, ctx.businessUnitId, orderId);
-      if (detail.order.patientId !== ctx.userId) throw forbidden('This order belongs to another patient');
-      if (detail.order.status !== 'results_released') throw forbidden('Results have not been released yet');
-      const conversation = await loadConversation(tx, orderId);
+      await releasedOrderFor(tx, ctx, orderId);
+      const availability = await chatAvailability(tx);
+      const threads = await listThreads(tx, orderId);
       await recordPhiAccess(tx, request, ctx, {
         resourceType: 'conversation',
         orderId,
         action: 'view',
       });
-      return conversation;
+      return { ...availability, threads };
     });
   });
 
-  app.post('/api/bu/:slug/patient/orders/:orderId/conversation', async (request) => {
-    const { slug, orderId } = orderParam.parse(request.params);
+  app.get('/api/bu/:slug/patient/orders/:orderId/threads/:threadId', async (request) => {
+    const { slug, orderId, threadId } = threadParam.parse(request.params);
     const ctx = requireMembership(request, slug, ['patient']);
-    const input = reportChatSchema.parse(request.body);
+    return withTenant(ctx, async (tx) => {
+      await releasedOrderFor(tx, ctx, orderId);
+      const thread = await requireThread(tx, orderId, threadId);
+      const messages = await loadThreadMessages(tx, threadId);
+      await recordPhiAccess(tx, request, ctx, {
+        resourceType: 'conversation',
+        resourceId: threadId,
+        orderId,
+        action: 'view',
+      });
+      return {
+        thread: {
+          id: thread.id,
+          title: thread.title ? decryptPhi(thread.title) : 'Conversation',
+          createdAt: thread.createdAt,
+          updatedAt: thread.updatedAt,
+        },
+        messages,
+      };
+    });
+  });
+
+  /** One turn: prepare in a transaction, call the model outside it, then persist in another. */
+  async function askInThread(
+    request: FastifyRequest,
+    slug: string,
+    orderId: string,
+    threadId: string | null,
+  ) {
+    const ctx = requireMembership(request, slug, ['patient']);
+    const input = reportThreadMessageSchema.parse(request.body);
 
     const prepared = await withTenant(ctx, async (tx) => {
-      const detail = await getOrderDetail(tx, ctx.businessUnitId, orderId);
-      if (detail.order.patientId !== ctx.userId) throw forbidden('This order belongs to another patient');
-      if (detail.order.status !== 'results_released') throw forbidden('Results have not been released yet');
+      const detail = await releasedOrderFor(tx, ctx, orderId);
+      if (threadId) await requireThread(tx, orderId, threadId);
       const fileIds = await fileIdsForOrder(tx, orderId);
       await recordPhiAccess(tx, request, ctx, {
         resourceType: 'conversation',
+        resourceId: threadId,
         orderId,
         action: 'chat',
       });
       return prepareReportChat(tx, {
         businessUnitId: ctx.businessUnitId,
-        orderId,
+        threadId,
         prompt: input.prompt,
         fileIds,
+        context: {
+          packageName: detail.order.packageName,
+          packageFocusArea: detail.order.packageFocusArea,
+          tests: [
+            ...new Map(
+              detail.kits.map((kit) => [
+                kit.testTypeName,
+                {
+                  name: kit.testTypeName,
+                  sampleType: kit.sampleType,
+                  description: kit.testTypeDescription,
+                },
+              ]),
+            ).values(),
+          ],
+        },
         interpretation: detail.review?.interpretation ?? null,
         recommendations: detail.review?.recommendations ?? null,
       });
@@ -349,17 +408,40 @@ export async function patientRoutes(app: FastifyInstance) {
 
     const { qualifier, completion } = await runReportChat(prepared);
 
-    const conversationId = await withTenant(ctx, (tx) =>
+    const savedThreadId = await withTenant(ctx, (tx) =>
       persistReportChat(tx, {
         businessUnitId: ctx.businessUnitId,
         orderId,
         patientUserId: ctx.userId,
+        threadId,
         prompt: input.prompt,
         qualifier,
         completion,
       }),
     );
 
-    return { reply: completion.content, disclaimer: prepared.disclaimer, conversationId };
+    return { threadId: savedThreadId, reply: completion.content, disclaimer: prepared.disclaimer };
+  }
+
+  app.post('/api/bu/:slug/patient/orders/:orderId/threads', async (request, reply) => {
+    const { slug, orderId } = orderParam.parse(request.params);
+    const result = await askInThread(request, slug, orderId, null);
+    return reply.status(201).send(result);
+  });
+
+  app.post('/api/bu/:slug/patient/orders/:orderId/threads/:threadId/messages', async (request) => {
+    const { slug, orderId, threadId } = threadParam.parse(request.params);
+    return askInThread(request, slug, orderId, threadId);
+  });
+
+  /** Hides a thread from the patient. The row stays for retention and the audit trail. */
+  app.delete('/api/bu/:slug/patient/orders/:orderId/threads/:threadId', async (request) => {
+    const { slug, orderId, threadId } = threadParam.parse(request.params);
+    const ctx = requireMembership(request, slug, ['patient']);
+    await withTenant(ctx, async (tx) => {
+      await releasedOrderFor(tx, ctx, orderId);
+      await archiveThread(tx, orderId, threadId);
+    });
+    return { archived: true };
   });
 }

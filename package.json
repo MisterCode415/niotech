@@ -20,6 +20,7 @@
     "db:generate": "pnpm -F @nio/api db:generate",
     "db:migrate": "pnpm -F @nio/api db:migrate",
     "db:seed": "pnpm -F @nio/api db:seed",
+    "db:encrypt-phi": "pnpm -F @nio/api db:encrypt-phi",
     "marketing:dev": "pnpm -F @nio/marketing dev",
     "marketing:build": "pnpm -F @nio/marketing build"
   },

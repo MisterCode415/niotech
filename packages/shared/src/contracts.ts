@@ -338,8 +338,9 @@ export const businessUnitAiSettingsSchema = z.object({
   railsPrompt: z.string().max(20_000),
 });
 
-export const reportChatSchema = z.object({
-  prompt: z.string().min(1).max(8000),
+/** One patient turn in a report-discussion thread; starting a thread uses the same body. */
+export const reportThreadMessageSchema = z.object({
+  prompt: z.string().trim().min(1).max(8000),
 });
 
 export const devLoginSchema = z.object({

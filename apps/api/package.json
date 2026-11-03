@@ -15,6 +15,7 @@
     "db:seed": "tsx src/db/seed.ts",
     "db:bootstrap": "tsx src/db/seedPlatformAdmin.ts",
     "storage:migrate": "tsx src/db/migrateStorage.ts",
+    "db:encrypt-phi": "tsx src/db/encryptPhi.ts",
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
