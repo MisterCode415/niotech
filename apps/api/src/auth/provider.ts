@@ -26,6 +26,11 @@ export interface InviteUserInput {
   name: string;
   /** App-relative login page, including the business-unit slug used to scope Auth0 login. */
   loginPath: string;
+  /**
+   * Origin the invitee should land on. Defaults to the shared platform origin; pass a tenant's
+   * custom domain so a white-labelled invitation never mentions the platform host.
+   */
+  origin?: string;
 }
 
 export interface InvitedUser {
@@ -49,6 +54,13 @@ export interface AuthProvider {
   createOrganization(input: CreateOrganizationInput): Promise<{ orgId: string }>;
   /** Provisions (or looks up) the provider-side user for a business unit member. */
   inviteUser(input: InviteUserInput): Promise<InvitedUser>;
+  /**
+   * Allows the SPA to sign in from, and return to, an additional origin (a tenant's custom
+   * domain). Idempotent. Without it the provider rejects the login redirect for that origin.
+   */
+  registerAppOrigin(origin: string): Promise<void>;
+  /** Reverses {@link registerAppOrigin}. Idempotent. */
+  unregisterAppOrigin(origin: string): Promise<void>;
   /** Client-side configuration the SPA needs to start a login flow. */
   publicConfig(): Record<string, unknown>;
 }

@@ -3,12 +3,15 @@ import { and, desc, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   businessUnitAiSettingsSchema,
+  businessUnitBrandSchema,
   cancelOrderSchema,
   correctOrderSchema,
   createMemberSchema,
   createPackageSchema,
   createTestTypeSchema,
+  normalizeOrigin,
   ROLE_LABELS,
+  updateMarketingOriginsSchema,
   updatePackageSchema,
   upsertMarketingPageSchema,
 } from '@nio/shared';
@@ -27,7 +30,10 @@ import {
   users,
 } from '../db/schema.js';
 import { badRequest, conflict, notFound } from '../lib/errors.js';
+import { clearEmbedCorsCache } from '../lib/embedCors.js';
+import { clearHostCache, tenantOrigin } from '../lib/hostTenant.js';
 import { sanitizeMarketingHtml } from '../lib/sanitizeHtml.js';
+import { listDomains } from '../services/domains.js';
 import { dispatchNotifications, sendInvitationEmail } from '../services/notifications.js';
 import {
   activeMembersByRole,
@@ -129,6 +135,87 @@ export async function businessUnitRoutes(app: FastifyInstance) {
 
       return { page };
     });
+  });
+
+  /* ---------------------------- Marketing-site origins ---------------------------- */
+
+  app.get('/api/bu/:slug/marketing-origins', async (request) => {
+    const { slug } = slugParam.parse(request.params);
+    const ctx = requireMembership(request, slug, ['bu_admin']);
+    const [row] = await withTenant(ctx, (tx) =>
+      tx
+        .select({ marketingOrigins: businessUnits.marketingOrigins })
+        .from(businessUnits)
+        .where(eq(businessUnits.id, ctx.businessUnitId))
+        .limit(1),
+    );
+    return { origins: row?.marketingOrigins ?? [] };
+  });
+
+  /** Replaces the allowlist. Entries are reduced to canonical origins and de-duplicated. */
+  app.put('/api/bu/:slug/marketing-origins', async (request) => {
+    const { slug } = slugParam.parse(request.params);
+    const ctx = requireMembership(request, slug, ['bu_admin']);
+    const input = updateMarketingOriginsSchema.parse(request.body);
+
+    const origins: string[] = [];
+    for (const entry of input.origins) {
+      const origin = normalizeOrigin(entry);
+      if (!origin) {
+        throw badRequest(
+          `“${entry}” is not a valid origin. Use https://your-site.com (no credentials).`,
+        );
+      }
+      if (!origins.includes(origin)) origins.push(origin);
+    }
+
+    await withTenant(ctx, (tx) =>
+      tx
+        .update(businessUnits)
+        .set({ marketingOrigins: origins, updatedAt: new Date() })
+        .where(eq(businessUnits.id, ctx.businessUnitId)),
+    );
+    // Removing an origin must take effect now, not after the widget CORS cache expires.
+    clearEmbedCorsCache();
+    return { origins };
+  });
+
+  /* ------------------------------ Branding and domains ------------------------------ */
+
+  app.get('/api/bu/:slug/brand', async (request) => {
+    const { slug } = slugParam.parse(request.params);
+    const ctx = requireMembership(request, slug, ['bu_admin']);
+    const [row] = await withTenant(ctx, (tx) =>
+      tx
+        .select({ brand: businessUnits.brand })
+        .from(businessUnits)
+        .where(eq(businessUnits.id, ctx.businessUnitId))
+        .limit(1),
+    );
+    return { brand: row?.brand ?? {} };
+  });
+
+  /** Replaces the brand. Omitted fields fall back to the platform defaults. */
+  app.put('/api/bu/:slug/brand', async (request) => {
+    const { slug } = slugParam.parse(request.params);
+    const ctx = requireMembership(request, slug, ['bu_admin']);
+    const brand = businessUnitBrandSchema.parse(request.body);
+
+    await withTenant(ctx, (tx) =>
+      tx
+        .update(businessUnits)
+        .set({ brand: Object.keys(brand).length > 0 ? brand : null, updatedAt: new Date() })
+        .where(eq(businessUnits.id, ctx.businessUnitId)),
+    );
+    clearHostCache();
+    return { brand };
+  });
+
+  /** Read-only: domains are connected by the platform team, who verify DNS ownership. */
+  app.get('/api/bu/:slug/domains', async (request) => {
+    const { slug } = slugParam.parse(request.params);
+    const ctx = requireMembership(request, slug, ['bu_admin']);
+    return { domains: await listDomains(ctx.businessUnitId) };
   });
 
   /* --------------------------------- Test types --------------------------------- */
@@ -452,6 +539,7 @@ export async function businessUnitRoutes(app: FastifyInstance) {
       email: member.email,
       name: member.name,
       loginPath: `/login?org=${encodeURIComponent(slug)}`,
+      origin: await tenantOrigin(ctx.businessUnitId),
     });
     if (!invited.signInUrl) {
       return { sent: false, reason: 'This environment does not send invitation emails' };
@@ -483,6 +571,7 @@ export async function businessUnitRoutes(app: FastifyInstance) {
       email: input.email,
       name: input.name,
       loginPath: `/login?org=${encodeURIComponent(slug)}`,
+      origin: await tenantOrigin(ctx.businessUnitId),
     });
 
     if (invited.signInUrl) {

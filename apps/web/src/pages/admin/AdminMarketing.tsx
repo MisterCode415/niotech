@@ -68,6 +68,42 @@ export function AdminMarketing() {
     },
   });
 
+  const origins = useQuery({
+    queryKey: ['admin', slug, 'marketing-origins'],
+    queryFn: () => api<{ origins: string[] }>(`/api/bu/${slug}/marketing-origins`),
+  });
+  const [originsText, setOriginsText] = useState('');
+  useEffect(() => {
+    if (origins.data) setOriginsText(origins.data.origins.join('\n'));
+  }, [origins.data]);
+
+  const saveOrigins = useMutation({
+    mutationFn: () =>
+      api<{ origins: string[] }>(`/api/bu/${slug}/marketing-origins`, {
+        method: 'PUT',
+        body: {
+          origins: originsText
+            .split('\n')
+            .map((line) => line.trim())
+            .filter(Boolean),
+        },
+      }),
+    onSuccess: (result) => {
+      setIsError(false);
+      setMessage(
+        result.origins.length > 0
+          ? 'Marketing site origins saved.'
+          : 'Marketing site origins cleared; return links are disabled.',
+      );
+      setOriginsText(result.origins.join('\n'));
+      void queryClient.invalidateQueries({ queryKey: ['admin', slug, 'marketing-origins'] });
+    },
+    onError: (err: Error) => {
+      setIsError(true);
+      setMessage(err.message);
+    },
+  });
+
   if (isLoading) return <Loading what="marketing page" />;
 
   const savedHtml = (data?.published ?? data?.versions[0])?.bodyHtml ?? '';
@@ -130,6 +166,44 @@ export function AdminMarketing() {
               className="marketing-body"
               dangerouslySetInnerHTML={{ __html: savedHtml }}
             />
+          </div>
+
+          <div className="card">
+            <div className="card-title">Marketing site origins</div>
+            <p className="small muted" style={{ marginTop: 0 }}>
+              Hosting your own marketing site? List its origin, one per line (for example{' '}
+              <span className="mono">https://www.your-clinic.com</span>). Checkout links can then
+              offer a “Back to site” button, and only to these origins. Buy links for each package
+              are on the Packages page.
+            </p>
+            <Field label="Allowed origins">
+              <textarea
+                value={originsText}
+                onChange={(e) => setOriginsText(e.target.value)}
+                placeholder="https://www.your-clinic.com"
+                style={{ minHeight: 80, fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 13 }}
+              />
+            </Field>
+            <button onClick={() => saveOrigins.mutate()} disabled={saveOrigins.isPending}>
+              Save origins
+            </button>
+          </div>
+
+          <div className="card">
+            <div className="card-title">Catalog widget</div>
+            <p className="small muted" style={{ marginTop: 0 }}>
+              Paste this where the package list should appear on your site. It shows your active
+              packages with a Buy button that continues to checkout here. It only works on the
+              origins listed above, and nothing about an order or a patient is ever sent back to
+              your page.
+            </p>
+            <pre
+              className="mono small"
+              style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', margin: 0 }}
+            >{`<div id="qinio-catalog"></div>
+<script async src="${window.location.origin}/embed.js"
+  data-business-unit="${slug}"
+  data-target="#qinio-catalog"></script>`}</pre>
           </div>
 
           <div className="card">

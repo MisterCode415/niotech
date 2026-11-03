@@ -1,0 +1,36 @@
+# Custom-domain edge. Layer over the production stack with CUSTOM_DOMAINS=true (deploy.sh does it):
+#   docker compose -f docker-compose.prod.yml -f docker-compose.edge.yml ...
+#
+# Caddy becomes the only public listener. It terminates TLS for the platform host and, on demand,
+# for every verified tenant domain, then forwards plain HTTP to nginx on the internal network.
+# nginx keeps serving the SPA and proxying /api; it simply stops being public.
+#
+# Needs Docker Compose >= 2.24.4 for the `!reset` tag.
+services:
+  web:
+    # Remove the 80/443 publishing from docker-compose.prod.yml; Caddy owns those ports now.
+    ports: !reset []
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      SERVER_NAME: ${SERVER_NAME:?set SERVER_NAME in .env.production}
+      ACME_EMAIL: ${PLATFORM_ADMIN_EMAIL:?set PLATFORM_ADMIN_EMAIL in .env.production}
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp'
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Issued certificates and the ACME account. Losing this forces re-issuance for every
+      # tenant domain at once, which can hit the certificate authority's rate limits.
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - web
+      - api
+
+volumes:
+  caddy-data:
+  caddy-config:

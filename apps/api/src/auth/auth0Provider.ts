@@ -259,8 +259,49 @@ export class Auth0Provider implements AuthProvider {
     }
   }
 
+  async registerAppOrigin(origin: string): Promise<void> {
+    await this.updateAppOrigin(origin, 'add');
+  }
+
+  async unregisterAppOrigin(origin: string): Promise<void> {
+    await this.updateAppOrigin(origin, 'remove');
+  }
+
+  /**
+   * The SPA is one Auth0 application shared by every tenant, so each custom domain has to be added
+   * to that application's callback, logout, and web-origin lists before a login started from it
+   * is accepted. Requires the management client to hold `read:clients` and `update:clients`.
+   */
+  private async updateAppOrigin(origin: string, action: 'add' | 'remove'): Promise<void> {
+    const clientPath = `/clients/${encodeURIComponent(this.config.spaClientId)}`;
+    // The same four lists the production runbook (COMMANDS.md) sets for the platform host.
+    const client = await this.management<{
+      callbacks?: string[];
+      allowed_logout_urls?: string[];
+      web_origins?: string[];
+      allowed_origins?: string[];
+    }>(`${clientPath}?fields=callbacks,allowed_logout_urls,web_origins,allowed_origins`, {
+      method: 'GET',
+    });
+
+    const wanted = {
+      callbacks: `${origin}/callback`,
+      allowed_logout_urls: origin,
+      web_origins: origin,
+      allowed_origins: origin,
+    } as const;
+
+    const next: Record<string, string[]> = {};
+    for (const key of Object.keys(wanted) as Array<keyof typeof wanted>) {
+      const without = (client[key] ?? []).filter((value) => value !== wanted[key]);
+      next[key] = action === 'add' ? [...without, wanted[key]] : without;
+    }
+
+    await this.management(clientPath, { method: 'PATCH', body: JSON.stringify(next) });
+  }
+
   async inviteUser(input: InviteUserInput): Promise<InvitedUser> {
-    const signInUrl = new URL(input.loginPath, env.WEB_ORIGIN).toString();
+    const signInUrl = new URL(input.loginPath, input.origin ?? env.WEB_ORIGIN).toString();
     const existing = await this.management<Auth0User[]>(
       `/users-by-email?email=${encodeURIComponent(input.email)}`,
       { method: 'GET' },

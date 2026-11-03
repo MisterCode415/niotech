@@ -18,6 +18,17 @@ if [[ "$(read_env BUNDLED_DB)" == "true" ]]; then
   echo "==> Using the bundled database (no managed instance)"
   COMPOSE="$COMPOSE -f docker-compose.bundled-db.yml"
 fi
+CUSTOM_DOMAINS="$(read_env CUSTOM_DOMAINS)"
+if [[ "$CUSTOM_DOMAINS" == "true" ]]; then
+  echo "==> Using the custom-domain edge (Caddy, on-demand TLS)"
+  # `ports: !reset []` in the overlay needs Compose 2.24.4 or newer; older versions would keep
+  # nginx on 80/443 and Caddy would then fail to bind them.
+  compose_version="$(docker compose version --short 2>/dev/null || echo 0)"
+  if [[ "$(printf '%s\n2.24.4\n' "${compose_version#v}" | sort -V | head -1)" != "2.24.4" ]]; then
+    fail "custom domains need Docker Compose >= 2.24.4 (found ${compose_version})"
+  fi
+  COMPOSE="$COMPOSE -f docker-compose.edge.yml"
+fi
 COMPOSE="$COMPOSE --env-file .env.production"
 
 # nginx will not start without a certificate, and certbot cannot validate without nginx running,

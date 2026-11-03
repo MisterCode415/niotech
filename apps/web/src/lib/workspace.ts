@@ -2,6 +2,7 @@ import { useLocation } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { MEMBERSHIP_ROLES, roleFromSegment, type MembershipRole } from '@nio/shared';
 import { api } from './api';
+import { useHost } from './host';
 import type { Me, Membership } from './auth';
 
 export interface Workspace extends Membership {
@@ -10,11 +11,13 @@ export interface Workspace extends Membership {
 }
 
 export function useWorkspaces(email: string | undefined) {
+  const host = useHost();
   return useQuery({
     queryKey: ['workspaces', email],
     queryFn: () => api<{ workspaces: Workspace[] }>('/api/workspaces'),
     staleTime: 60_000,
-    enabled: Boolean(email),
+    // A tenant's domain is pinned to one business unit and has no workspace chooser.
+    enabled: Boolean(email) && !host.custom,
   });
 }
 

@@ -9,19 +9,17 @@ import {
   kits,
   labResults,
   orders,
-  packageTestTypes,
   packages,
-  testTypes,
 } from '../db/schema.js';
 import { badRequest, forbidden, notFound } from '../lib/errors.js';
-import { generateOrderNumber } from '../lib/ids.js';
+import { requestOrigin } from '../lib/hostTenant.js';
 import { getOrderDetail } from '../services/orderQueries.js';
 import { paymentProvider } from '../services/payments.js';
 import { dispatchNotifications } from '../services/notifications.js';
 import { dispatchPaidOrder } from '../services/paidOrder.js';
 import { createCheckoutSession, stripeEnabled } from '../services/stripe.js';
-import { recordEvent } from '../services/orderWorkflow.js';
 import { storage } from '../services/storage.js';
+import { placeOrder } from '../services/placeOrder.js';
 import { markReceivedByPatient, markSampleSent } from '../services/kitCustody.js';
 import { getOrCreateExtraction } from '../services/pdfExtract.js';
 import { recordPhiAccess } from '../services/phiAudit.js';
@@ -69,64 +67,19 @@ export async function patientRoutes(app: FastifyInstance) {
     const ctx = requireMembership(request, slug, ['patient']);
     const input = createOrderSchema.parse(request.body);
 
-    const order = await withTenant(ctx, async (tx) => {
-      const [pkg] = await tx
-        .select()
-        .from(packages)
-        .where(and(eq(packages.id, input.packageId), eq(packages.status, 'active')))
-        .limit(1);
-      if (!pkg) throw notFound('Package not available');
-
-      const composition = await tx
-        .select({
-          testTypeId: testTypes.id,
-          name: testTypes.name,
-          sampleType: testTypes.sampleType,
-          turnaroundDays: testTypes.turnaroundDays,
-          quantity: packageTestTypes.quantity,
-        })
-        .from(packageTestTypes)
-        .innerJoin(testTypes, eq(testTypes.id, packageTestTypes.testTypeId))
-        .where(eq(packageTestTypes.packageId, pkg.id));
-      if (composition.length === 0) throw badRequest('Package has no test types configured');
-
-      const [created] = await tx
-        .insert(orders)
-        .values({
-          businessUnitId: ctx.businessUnitId,
-          orderNumber: generateOrderNumber(),
-          patientUserId: ctx.userId,
-          packageId: pkg.id,
-          status: 'pending_payment',
-          priceCents: pkg.priceCents,
-          paymentStatus: 'unpaid',
-          packageSnapshot: {
-            packageName: pkg.name,
-            packageVersion: pkg.version,
-            priceCents: pkg.priceCents,
-            requiresClinician: pkg.requiresClinician,
-            internalReference: pkg.internalReference,
-            externalProductId: pkg.externalProductId,
-            tests: composition,
-          },
-          shippingAddress: input.shippingAddress,
-          shippingMethod: input.shippingMethod,
-          requiresClinician: pkg.requiresClinician,
-        })
-        .returning();
-
-      await recordEvent(tx, {
+    const order = await withTenant(ctx, (tx) =>
+      placeOrder(tx, {
         businessUnitId: ctx.businessUnitId,
-        orderId: created!.id,
-        actorUserId: ctx.userId,
+        patientUserId: ctx.userId,
         actorRole: 'patient',
-        toStatus: 'pending_payment',
-        message: `Order placed for ${pkg.name}`,
-        metadata: { packageId: pkg.id },
-      });
-
-      return created!;
-    });
+        actorUserId: ctx.userId,
+        packageId: input.packageId,
+        shippingAddress: input.shippingAddress,
+        shippingMethod: input.shippingMethod,
+        attribution: input.attribution,
+        intentId: input.intentId,
+      }),
+    );
 
     return reply.status(201).send({ order });
   });
@@ -157,6 +110,7 @@ export async function patientRoutes(app: FastifyInstance) {
         packageId: order.packageId,
         amountCents: order.priceCents,
         customerEmail: ctx.actor.identity.email,
+        origin: requestOrigin(request, ctx.businessUnitId),
       });
       return { status: 'pending_payment', checkoutUrl: session.url };
     }

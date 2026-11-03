@@ -107,7 +107,8 @@ export async function fulfillmentRoutes(app: FastifyInstance) {
       order: detail.order,
       kits: detail.kits.map((kit) => ({
         ...kit,
-        // Everything the sticker needs: our id, their id, and the scannable token.
+        // Everything the sticker needs: our id, their id, and the scannable token. Stickers are
+        // physical and outlive any domain change, so they always point at the platform origin.
         qrPayload: `${env.WEB_ORIGIN}/scan/${kit.qrToken}`,
       })),
       shipments: detail.shipments,

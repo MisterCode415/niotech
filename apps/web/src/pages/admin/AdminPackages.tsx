@@ -66,10 +66,33 @@ export function AdminPackages() {
     queryFn: () => api<{ packages: PackageRow[] }>(`/api/bu/${slug}/packages`),
   });
 
+  const domains = useQuery({
+    queryKey: ['admin', slug, 'domains'],
+    queryFn: () =>
+      api<{ domains: Array<{ hostname: string; status: string; isPrimary: boolean }> }>(
+        `/api/bu/${slug}/domains`,
+      ),
+  });
+
   function done(text: string) {
     setIsError(false);
     setMessage(text);
     void queryClient.invalidateQueries({ queryKey: ['admin', slug] });
+  }
+  /** A plain deep link a marketing site can use as a "Buy" button; utm_* tags pass through. */
+  async function copyBuyLink(pkg: PackageRow) {
+    // Shoppers should land on the tenant's own domain once it has one.
+    const primary = domains.data?.domains.find((d) => d.isPrimary && d.status === 'verified');
+    const origin = primary ? `https://${primary.hostname}` : window.location.origin;
+    const link = `${origin}/${slug}/buy/${pkg.id}`;
+    try {
+      await navigator.clipboard.writeText(link);
+      setIsError(false);
+      setMessage(`Buy link for “${pkg.name}” copied: ${link}`);
+    } catch {
+      setIsError(false);
+      setMessage(`Buy link for “${pkg.name}”: ${link}`);
+    }
   }
   function fail(err: Error) {
     setIsError(true);
@@ -423,6 +446,15 @@ export function AdminPackages() {
                     <button className="small" onClick={() => editPackage(pkg)}>
                       Edit
                     </button>
+                    {pkg.status === 'active' && (
+                      <button
+                        className="small"
+                        style={{ marginLeft: 6 }}
+                        onClick={() => void copyBuyLink(pkg)}
+                      >
+                        Copy buy link
+                      </button>
+                    )}
                     {pkg.externalPurchaseUrl && (
                       <a
                         className="btn small"

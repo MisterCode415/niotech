@@ -2,6 +2,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { workspacePath } from '@nio/shared';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api';
+import { readHandoff, safeReturnLink } from '../lib/handoff';
 import { Alert, Loading } from '../components/ui';
 
 export function CheckoutReturn() {
@@ -9,6 +10,7 @@ export function CheckoutReturn() {
   const orderId = params.get('order') ?? '';
   const slug = params.get('slug') ?? '';
   const cancelled = params.get('cancelled') === '1';
+  const backLink = safeReturnLink(readHandoff(slug)?.returnUrl);
 
   const order = useQuery({
     queryKey: ['checkout-return', slug, orderId],
@@ -57,6 +59,12 @@ export function CheckoutReturn() {
       <Link className="btn primary" to={workspacePath(slug, 'patient', `/orders/${orderId}`)}>
         View order
       </Link>
+      {backLink && (
+        // Plain link to the tenant's own site: no order, package, or patient data is appended.
+        <a className="btn" href={backLink.href} rel="noreferrer" style={{ marginLeft: 8 }}>
+          Back to {backLink.host}
+        </a>
+      )}
       {!paid && (
         <>
           <button

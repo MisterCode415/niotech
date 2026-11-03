@@ -66,6 +66,11 @@ export class DevAuthProvider implements AuthProvider {
     return { subject: `dev|${input.email}` };
   }
 
+  /** The dev provider has no redirect allow-list, so any origin already works. */
+  async registerAppOrigin(): Promise<void> {}
+
+  async unregisterAppOrigin(): Promise<void> {}
+
   publicConfig(): Record<string, unknown> {
     return { provider: 'dev', loginPath: '/api/auth/dev/login' };
   }

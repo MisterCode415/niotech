@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom';
 import { workspacePath, type MembershipRole } from '@nio/shared';
 import { ActAsSync, useAuth } from './lib/auth';
+import { BrandSync, useHost } from './lib/host';
 import { loginPathFor } from './lib/returnTo';
 import {
   canActAs,
@@ -16,6 +17,9 @@ import { Login } from './pages/Login';
 import { Directory } from './pages/Directory';
 import { Storefront } from './pages/Storefront';
 import { Register } from './pages/Register';
+import { Buy } from './pages/Buy';
+import { GuestCheckout } from './pages/GuestCheckout';
+import { GuestThanks } from './pages/GuestThanks';
 import { Checkout } from './pages/Checkout';
 import { CheckoutReturn } from './pages/CheckoutReturn';
 import { PortalHome } from './pages/PortalHome';
@@ -24,6 +28,8 @@ import { AccessProblem } from './pages/AccessProblem';
 
 import { PlatformDashboard } from './pages/platform/PlatformDashboard';
 import { PlatformAi } from './pages/platform/PlatformAi';
+import { PlatformDomains } from './pages/platform/PlatformDomains';
+import { AdminBranding } from './pages/admin/AdminBranding';
 import { AdminOverview } from './pages/admin/AdminOverview';
 import { AdminAi } from './pages/admin/AdminAi';
 import { AdminAudit } from './pages/admin/AdminAudit';
@@ -121,18 +127,29 @@ function workspaceRoute(role: MembershipRole, path: string, element: React.React
   );
 }
 
+/** A custom domain has no directory page: its root is that tenant's storefront. */
+function Home() {
+  const host = useHost();
+  return host.custom ? <Navigate to={`/${host.slug}`} replace /> : <Directory />;
+}
+
 export function App() {
   return (
     <>
       <ActAsSync />
+      <BrandSync />
       <Routes>
-        <Route path="/" element={<Directory />} />
+        <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login />} />
         {/* Auth0 returns here with its authorization code. The SDK exchanges it during mount and
             then redirects, so this is only ever on screen for a moment. */}
         <Route path="/callback" element={<div className="centered">Signing in…</div>} />
         <Route path="/:slug" element={<Storefront />} />
         <Route path="/:slug/register" element={<Register />} />
+        <Route path="/:slug/buy/:packageId" element={<Buy />} />
+        {/* Pay-first checkout: public on purpose, the account is created after payment. */}
+        <Route path="/:slug/order/:packageId" element={<GuestCheckout />} />
+        <Route path="/:slug/thanks" element={<GuestThanks />} />
 
         <Route
           element={
@@ -164,7 +181,17 @@ export function App() {
             }
           />
 
+          <Route
+            path="/portal/platform/domains"
+            element={
+              <RequirePlatformAdmin>
+                <PlatformDomains />
+              </RequirePlatformAdmin>
+            }
+          />
+
           {workspaceRoute('bu_admin', '/w/:slug/admin', <AdminOverview />)}
+          {workspaceRoute('bu_admin', '/w/:slug/admin/branding', <AdminBranding />)}
           {workspaceRoute('bu_admin', '/w/:slug/admin/packages', <AdminPackages />)}
           {workspaceRoute('bu_admin', '/w/:slug/admin/marketing', <AdminMarketing />)}
           {workspaceRoute('bu_admin', '/w/:slug/admin/team', <AdminTeam />)}

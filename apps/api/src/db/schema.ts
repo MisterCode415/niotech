@@ -13,11 +13,12 @@ import {
   uniqueIndex,
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
-import { relations } from 'drizzle-orm';
+import { relations, sql } from 'drizzle-orm';
 import {
   MEMBERSHIP_ROLES,
   ACTOR_ROLES,
   BUSINESS_UNIT_STATUSES,
+  DOMAIN_STATUSES,
   USER_STATUSES,
   ORDER_STATUSES,
   KIT_STATUSES,
@@ -25,11 +26,14 @@ import {
   ORDER_ISSUE_REASONS,
   CLINICIAN_DECISIONS,
   type Address,
+  type BusinessUnitBrand,
+  type CheckoutAttribution,
   type OrderPackageSnapshot,
 } from '@nio/shared';
 
 /* ---------------------------------- Enums ---------------------------------- */
 
+export const domainStatusEnum = pgEnum('domain_status', DOMAIN_STATUSES);
 export const membershipRoleEnum = pgEnum('membership_role', MEMBERSHIP_ROLES);
 export const actorRoleEnum = pgEnum('actor_role', ACTOR_ROLES);
 export const businessUnitStatusEnum = pgEnum('business_unit_status', BUSINESS_UNIT_STATUSES);
@@ -120,10 +124,53 @@ export const businessUnits = pgTable(
     /** Printed on the prepaid return label that ships inside every kit. */
     labName: text('lab_name'),
     labReturnAddress: jsonb('lab_return_address').$type<Address>(),
+    /**
+     * Origins (scheme + host) of the tenant's own marketing sites. A checkout intent may only send
+     * the shopper back to one of these, which keeps the return link from becoming an open redirect.
+     */
+    marketingOrigins: text('marketing_origins')
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
+    /** White-label presentation applied to the storefront, checkout, and patient portal shell. */
+    brand: jsonb('brand').$type<BusinessUnitBrand>(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex('business_units_slug_key').on(t.slug)],
+);
+
+/**
+ * A hostname a business unit serves its storefront and patient portal from. Rows are created and
+ * verified by platform administrators; a tenant can only read its own. Only a `verified` row
+ * resolves to a tenant or is approved for a TLS certificate.
+ */
+export const businessUnitDomains = pgTable(
+  'business_unit_domains',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    businessUnitId: uuid('business_unit_id')
+      .notNull()
+      .references(() => businessUnits.id, { onDelete: 'cascade' }),
+    hostname: text('hostname').notNull(),
+    status: domainStatusEnum('status').notNull().default('pending'),
+    /** Published by the tenant as a TXT record at `_qinio.<hostname>` to prove control. */
+    verificationToken: text('verification_token').notNull(),
+    verifiedAt: timestamp('verified_at', { withTimezone: true }),
+    /** The address used in emails and anywhere no request host is available. One per tenant. */
+    isPrimary: boolean('is_primary').notNull().default(false),
+    lastCheckAt: timestamp('last_check_at', { withTimezone: true }),
+    lastCheckError: text('last_check_error'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('business_unit_domains_hostname_key').on(t.hostname),
+    uniqueIndex('business_unit_domains_one_primary_key')
+      .on(t.businessUnitId)
+      .where(sql`${t.isPrimary}`),
+    index('business_unit_domains_bu_idx').on(t.businessUnitId),
+  ],
 );
 
 /* --------------------------------- Identity --------------------------------- */
@@ -365,6 +412,15 @@ export const orders = pgTable(
     orderSource: text('order_source').notNull().default('native'),
     externalOrderId: text('external_order_id'),
     externalPaymentId: text('external_payment_id'),
+    /** Campaign tags (utm_*, ref) carried from the marketing site. Never identity or order data. */
+    attribution: jsonb('attribution').$type<CheckoutAttribution>(),
+    /**
+     * Placed by a shopper who has no account yet. The activation invite is withheld until payment
+     * clears, so an unpaid or abandoned checkout never provisions an identity.
+     */
+    guestActivation: boolean('guest_activation').notNull().default(false),
+    /** Claimed before sending, so replayed payment events and the retry sweep cannot double-send. */
+    activationInviteSentAt: timestamp('activation_invite_sent_at', { withTimezone: true }),
     shippingAddress: jsonb('shipping_address').$type<Address>().notNull(),
     shippingMethod: shippingMethodEnum('shipping_method').notNull().default('ground'),
     /** The fulfillment partner's own order id, entered by them so both ends reconcile. */
@@ -385,6 +441,37 @@ export const orders = pgTable(
     ),
     index('orders_bu_status_idx').on(t.businessUnitId, t.status),
     index('orders_patient_idx').on(t.patientUserId),
+    index('orders_pending_activation_idx')
+      .on(t.createdAt)
+      .where(sql`${t.guestActivation} = true and ${t.activationInviteSentAt} is null`),
+  ],
+);
+
+/**
+ * A short-lived, unguessable handoff created by a tenant's marketing site. It names a package and a
+ * return link on an allowlisted origin and carries campaign tags only; the price is always read
+ * from the catalog at checkout, and no patient or order data is ever stored here.
+ */
+export const checkoutIntents = pgTable(
+  'checkout_intents',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    businessUnitId: uuid('business_unit_id')
+      .notNull()
+      .references(() => businessUnits.id, { onDelete: 'cascade' }),
+    packageId: uuid('package_id')
+      .notNull()
+      .references(() => packages.id, { onDelete: 'cascade' }),
+    returnUrl: text('return_url'),
+    attribution: jsonb('attribution').$type<CheckoutAttribution>(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    /** Set when an order is placed from this intent; resolving it stays possible afterwards. */
+    consumedAt: timestamp('consumed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('checkout_intents_bu_expires_idx').on(t.businessUnitId, t.expiresAt),
+    index('checkout_intents_package_idx').on(t.packageId),
   ],
 );
 

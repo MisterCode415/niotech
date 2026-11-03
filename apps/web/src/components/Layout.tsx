@@ -1,6 +1,7 @@
 import { NavLink, Outlet, Link } from 'react-router-dom';
 import { ROLE_LABELS, workspacePath, type MembershipRole } from '@nio/shared';
 import { useAuth } from '../lib/auth';
+import { BrandMark, useHost } from '../lib/host';
 import { useIdleLogout } from '../lib/idleLogout';
 import { useWorkspace } from '../lib/workspace';
 import { NotificationBell } from './NotificationBell';
@@ -25,6 +26,7 @@ function navFor(role: MembershipRole, slug: string): NavItem[] {
         { to: at('/payments'), label: 'Payments' },
         { to: at('/ai'), label: 'Report AI' },
         { to: at('/marketing'), label: 'Marketing page' },
+        { to: at('/branding'), label: 'Branding' },
         { to: at('/audit'), label: 'Disclosures' },
       ];
     case 'patient':
@@ -46,6 +48,7 @@ function navFor(role: MembershipRole, slug: string): NavItem[] {
 
 export function Layout() {
   const { me, logout } = useAuth();
+  const host = useHost();
   const workspace = useWorkspace(me);
   const items = workspace ? navFor(workspace.role, workspace.slug) : [];
   const idle = useIdleLogout({ enabled: Boolean(me), onTimeout: logout });
@@ -54,10 +57,10 @@ export function Layout() {
     <div className="app-shell">
       <header className="topbar">
         <Link to="/portal?choose" className="brand">
-          Qin<span>io</span>
+          <BrandMark />
         </Link>
 
-        <WorkspaceSwitcher />
+        {host.custom ? null : <WorkspaceSwitcher />}
 
         <nav className="topnav">
           {items.map((item) => (

@@ -87,9 +87,14 @@ export function PlatformDashboard() {
             each business unit's own admin.
           </p>
         </div>
-        <Link to="/portal/platform/ai" className="btn">
-          Report AI
-        </Link>
+        <div className="role-chips">
+          <Link to="/portal/platform/domains" className="btn">
+            Custom domains
+          </Link>
+          <Link to="/portal/platform/ai" className="btn">
+            Report AI
+          </Link>
+        </div>
       </div>
 
       <Alert tone={isError ? 'error' : 'success'}>{message}</Alert>

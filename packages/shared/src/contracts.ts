@@ -99,12 +99,54 @@ export const registerPatientSchema = z.object({
   packageId: z.uuid().optional(),
 });
 
+/**
+ * Campaign tags carried from a marketing site into checkout. Only these keys survive parsing, so
+ * the object can never be used to smuggle identity or order data through the handoff.
+ */
+const attributionValue = z.string().trim().min(1).max(200);
+export const checkoutAttributionSchema = z.object({
+  utm_source: attributionValue.optional(),
+  utm_medium: attributionValue.optional(),
+  utm_campaign: attributionValue.optional(),
+  utm_term: attributionValue.optional(),
+  utm_content: attributionValue.optional(),
+  ref: attributionValue.optional(),
+});
+export type CheckoutAttribution = z.infer<typeof checkoutAttributionSchema>;
+
 export const createOrderSchema = z.object({
   packageId: z.uuid(),
   shippingAddress: addressSchema,
   shippingMethod: shippingMethodSchema.default('ground'),
+  attribution: checkoutAttributionSchema.optional(),
+  /** The marketing-site handoff this order came from; only used to mark it as consumed. */
+  intentId: z.uuid().optional(),
 });
 export type CreateOrderInput = z.infer<typeof createOrderSchema>;
+
+/**
+ * Body of `POST /api/public/:slug/orders`: an order from someone with no account yet. The account
+ * is created and activated only after payment clears.
+ */
+export const createGuestOrderSchema = createOrderSchema.extend({
+  email: z.email(),
+  name: z.string().trim().min(1).max(120),
+});
+export type CreateGuestOrderInput = z.infer<typeof createGuestOrderSchema>;
+
+/** Body of `POST /api/public/:slug/checkout-intents`. */
+export const createCheckoutIntentSchema = z.object({
+  packageId: z.uuid(),
+  returnUrl: z.string().max(2000).optional(),
+  attribution: checkoutAttributionSchema.optional(),
+});
+export type CreateCheckoutIntentInput = z.infer<typeof createCheckoutIntentSchema>;
+
+/** Body of `PUT /api/bu/:slug/marketing-origins`. */
+export const updateMarketingOriginsSchema = z.object({
+  origins: z.array(z.string().trim().min(1).max(255)).max(10),
+});
+export type UpdateMarketingOriginsInput = z.infer<typeof updateMarketingOriginsSchema>;
 
 export interface OrderPackageSnapshot {
   packageName: string;
@@ -303,3 +345,53 @@ export const reportChatSchema = z.object({
 export const devLoginSchema = z.object({
   email: z.email(),
 });
+
+/** Which way a prospective business unit expects to run the lifecycle. */
+export const SALES_LEAD_MODELS = ['managed', 'byo', 'unsure'] as const;
+export type SalesLeadModel = (typeof SALES_LEAD_MODELS)[number];
+
+export const SALES_LEAD_MODEL_LABELS: Record<SalesLeadModel, string> = {
+  managed: 'Sell kits through QiNio',
+  byo: 'Bring our own fulfillment, lab, and clinicians',
+  unsure: 'Not sure yet',
+};
+
+/** Collapses control characters (including newlines) so a value is safe in a mail header. */
+const singleLine = (max: number) =>
+  z
+    .string()
+    .max(max)
+    .transform((value) => value.replace(/\p{Cc}+/gu, ' ').trim())
+    .pipe(z.string().min(1));
+
+/**
+ * A sales enquiry from the public marketing site. `company_url` is a honeypot: it is hidden from
+ * people, so anything in it marks the submission as automated.
+ */
+export const salesLeadSchema = z.object({
+  name: singleLine(120),
+  email: z
+    .string()
+    .trim()
+    .max(254)
+    .pipe(z.email())
+    .transform((value) => value.toLowerCase()),
+  company: singleLine(160),
+  website: z
+    .string()
+    .trim()
+    .max(300)
+    .refine((value) => {
+      try {
+        const url = new URL(value);
+        return url.protocol === 'https:' || url.protocol === 'http:';
+      } catch {
+        return false;
+      }
+    }, 'Must be an http(s) URL')
+    .optional(),
+  model: z.enum(SALES_LEAD_MODELS),
+  message: z.string().trim().min(20).max(2000),
+  company_url: z.string().max(500).optional(),
+});
+export type SalesLeadInput = z.infer<typeof salesLeadSchema>;

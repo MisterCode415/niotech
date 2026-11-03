@@ -1,0 +1,45 @@
+{
+	# Used for certificate expiry notices. Same mailbox as the platform admin.
+	email {$ACME_EMAIL}
+
+	# A certificate is requested for a hostname only when the API says it belongs to a verified
+	# tenant domain. Without this gate anyone could point a DNS name at this server and make it
+	# burn through the certificate authority's rate limits. The endpoint is internal: it is
+	# blocked on the public listener (see deploy/nginx.conf.template).
+	on_demand_tls {
+		ask http://api:4000/api/internal/domain-allowed
+	}
+}
+
+(edge) {
+	# The headers nginx used to set on the public listener, now that Caddy is the public edge.
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# The original Host header is passed through untouched; the API resolves it to a tenant.
+	reverse_proxy web:8080 {
+		flush_interval -1
+		transport http {
+			read_timeout 120s
+			write_timeout 120s
+		}
+	}
+}
+
+# The platform's own hostname: an ordinary certificate, issued at startup.
+{$SERVER_NAME} {
+	import edge
+}
+
+# Everything else: tenant custom domains. TLS is only attempted for names the API approves.
+https:// {
+	tls {
+		on_demand
+	}
+	import edge
+}

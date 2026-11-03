@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../lib/auth';
 import { safeReturnTo } from '../lib/returnTo';
 import { api } from '../lib/api';
+import { BrandMark, useHost } from '../lib/host';
 import { Alert, Field } from '../components/ui';
 
 const DEV_PERSONAS = [
@@ -30,7 +31,9 @@ export function Login() {
 
   // Arriving from a storefront scopes the login to that tenant's Auth0 organization; arriving
   // directly (a platform admin, say) has no organization and uses the plain tenant login.
-  const orgSlug = searchParams.get('org');
+  // On a tenant's own domain the organization is implied by the host, so a bare /login still scopes.
+  const host = useHost();
+  const orgSlug = searchParams.get('org') ?? (host.custom ? host.slug : null);
   const handoff = useQuery({
     queryKey: ['login-handoff', orgSlug],
     queryFn: () => api<LoginHandoff>(`/api/public/${orgSlug}/login`),
@@ -59,9 +62,9 @@ export function Login() {
     <div className="centered">
       <div className="auth-card">
         <h1>
-          Qin<span style={{ color: 'var(--accent)' }}>io</span>
+          <BrandMark />
         </h1>
-        <p className="muted">Testing and lab workflow platform.</p>
+        {host.custom ? null : <p className="muted">Testing and lab workflow platform.</p>}
 
         <Alert tone="error">{error}</Alert>
 

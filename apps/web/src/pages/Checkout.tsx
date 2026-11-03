@@ -2,10 +2,12 @@ import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { workspacePath } from '@nio/shared';
 import { useQuery } from '@tanstack/react-query';
-import { SHIPPING_METHODS, SHIPPING_METHOD_LABELS } from '@nio/shared';
 import { api } from '../lib/api';
+import { readHandoff } from '../lib/handoff';
 import { money } from '../lib/format';
-import { Alert, Field, Loading } from '../components/ui';
+import { Alert, Loading } from '../components/ui';
+import { OrderSummary } from '../components/OrderSummary';
+import { EMPTY_SHIPPING_ADDRESS, ShippingFields } from '../components/ShippingFields';
 
 interface PackageRow {
   id: string;
@@ -19,14 +21,7 @@ export function Checkout() {
   const { slug = '', packageId = '' } = useParams();
   const navigate = useNavigate();
 
-  const [address, setAddress] = useState({
-    line1: '',
-    line2: '',
-    city: '',
-    region: '',
-    postalCode: '',
-    country: 'US',
-  });
+  const [address, setAddress] = useState(EMPTY_SHIPPING_ADDRESS);
   const [shippingMethod, setShippingMethod] = useState<string>('ground');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -43,12 +38,15 @@ export function Checkout() {
     setBusy(true);
     setError('');
     try {
+      const handoff = readHandoff(slug, packageId);
       const { order } = await api<{ order: { id: string } }>(`/api/bu/${slug}/patient/orders`, {
         method: 'POST',
         body: {
           packageId,
           shippingAddress: { ...address, line2: address.line2 || undefined },
           shippingMethod,
+          ...(handoff?.attribution ? { attribution: handoff.attribution } : {}),
+          ...(handoff?.intentId ? { intentId: handoff.intentId } : {}),
         },
       });
 
@@ -92,53 +90,12 @@ export function Checkout() {
         <form className="card" onSubmit={submit}>
           <Alert tone="error">{error}</Alert>
 
-          <Field label="Address line 1">
-            <input
-              value={address.line1}
-              onChange={(e) => setAddress({ ...address, line1: e.target.value })}
-              required
-            />
-          </Field>
-          <Field label="Address line 2">
-            <input
-              value={address.line2}
-              onChange={(e) => setAddress({ ...address, line2: e.target.value })}
-            />
-          </Field>
-
-          <div className="field-row">
-            <Field label="City">
-              <input
-                value={address.city}
-                onChange={(e) => setAddress({ ...address, city: e.target.value })}
-                required
-              />
-            </Field>
-            <Field label="State / region">
-              <input
-                value={address.region}
-                onChange={(e) => setAddress({ ...address, region: e.target.value })}
-                required
-              />
-            </Field>
-            <Field label="Postal code">
-              <input
-                value={address.postalCode}
-                onChange={(e) => setAddress({ ...address, postalCode: e.target.value })}
-                required
-              />
-            </Field>
-          </div>
-
-          <Field label="Shipping speed">
-            <select value={shippingMethod} onChange={(e) => setShippingMethod(e.target.value)}>
-              {SHIPPING_METHODS.map((method) => (
-                <option key={method} value={method}>
-                  {SHIPPING_METHOD_LABELS[method]}
-                </option>
-              ))}
-            </select>
-          </Field>
+          <ShippingFields
+            address={address}
+            onAddress={setAddress}
+            shippingMethod={shippingMethod}
+            onShippingMethod={setShippingMethod}
+          />
 
           <button className="primary" type="submit" disabled={busy} style={{ width: '100%' }}>
             {busy ? 'Placing order…' : `Pay ${money(pkg.priceCents)}`}
@@ -148,24 +105,7 @@ export function Checkout() {
           </p>
         </form>
 
-        <div className="card stack">
-          <div>
-            <div className="card-title">Order summary</div>
-            <h3>{pkg.name}</h3>
-          </div>
-          <div className="spread">
-            <span className="muted">Kits included</span>
-            <strong>{pkg.kitCount}</strong>
-          </div>
-          <div className="spread">
-            <span className="muted">Clinician review</span>
-            <strong>{pkg.requiresClinician ? 'Yes' : 'Not required'}</strong>
-          </div>
-          <div className="spread" style={{ borderTop: '1px solid var(--border)', paddingTop: 12 }}>
-            <span className="muted">Total</span>
-            <span className="price">{money(pkg.priceCents)}</span>
-          </div>
-        </div>
+        <OrderSummary pkg={pkg} />
       </div>
     </>
   );

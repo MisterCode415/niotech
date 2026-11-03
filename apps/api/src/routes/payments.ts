@@ -28,6 +28,7 @@ import {
   syncPackageCatalog,
 } from '../services/stripe.js';
 import { dispatchPaidOrder } from '../services/paidOrder.js';
+import { sendOrderActivationInvites } from '../services/activation.js';
 import { dispatchNotifications } from '../services/notifications.js';
 
 const slugParam = z.object({ slug: z.string() });
@@ -320,6 +321,7 @@ export async function paymentRoutes(app: FastifyInstance) {
     );
     const paymentIntentId =
       typeof session.payment_intent === 'string' ? session.payment_intent : null;
+    let dispatchedOrderId: string | null = null;
     const intents = await withTenant(ctx, async (tx) => {
       if (session.payment_status === 'paid') {
         await tx
@@ -337,6 +339,7 @@ export async function paymentRoutes(app: FastifyInstance) {
           .where(eq(orders.id, payment.orderId))
           .limit(1);
         if (order?.status === 'pending_payment') {
+          dispatchedOrderId = order.id;
           return dispatchPaidOrder(tx, {
             businessUnitId: ctx.businessUnitId,
             order,
@@ -358,6 +361,7 @@ export async function paymentRoutes(app: FastifyInstance) {
       return [];
     });
     await dispatchNotifications(intents);
+    if (dispatchedOrderId) await sendOrderActivationInvites([dispatchedOrderId]);
     return {
       payment: {
         id: payment.id,

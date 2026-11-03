@@ -46,6 +46,14 @@ const envSchema = z.object({
   SMTP_HOST: z.string().default('localhost'),
   SMTP_PORT: z.coerce.number().default(1025),
   SMTP_FROM: z.string().default('Qinio <no-reply@niotech.test>'),
+  /** Where marketing-site enquiries are mailed. Unset in production means the endpoint answers 503. */
+  SALES_LEAD_EMAIL: z.string().email().optional(),
+  /** Origin of the static marketing site, allowed to POST to the public lead endpoint only. */
+  MARKETING_SITE_ORIGIN: z
+    .string()
+    .url()
+    .transform((value) => new URL(value).origin)
+    .optional(),
   // Omitted for local capture (Mailpit accepts anything); required by every hosted relay.
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),

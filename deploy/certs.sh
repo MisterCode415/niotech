@@ -7,6 +7,13 @@ cd "$(dirname "$0")/.."
 
 COMPOSE="docker compose -f docker-compose.prod.yml --env-file .env.production"
 
+# With the custom-domain edge, Caddy issues and renews every certificate itself, platform host
+# included. Running certbot as well would fight it for port 80.
+if grep -Eq '^CUSTOM_DOMAINS="?true"?$' .env.production; then
+  echo "CUSTOM_DOMAINS=true: Caddy manages certificates automatically; nothing to do." >&2
+  exit 0
+fi
+
 SERVER_NAME="$(grep -E '^SERVER_NAME=' .env.production | cut -d= -f2)"
 EMAIL="$(grep -E '^PLATFORM_ADMIN_EMAIL=' .env.production | cut -d= -f2)"
 

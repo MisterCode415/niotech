@@ -356,6 +356,13 @@ export async function createCheckoutSession(input: {
   packageId: string;
   amountCents: number;
   customerEmail: string;
+  /**
+   * The shopper has no session. They come back to a page that names no order or package, and a
+   * cancelled payment returns them to the guest order form rather than to a sign-in wall.
+   */
+  guest?: boolean;
+  /** Where Stripe sends the shopper back to. Defaults to the platform origin. */
+  origin?: string;
 }): Promise<{ url: string; sessionId: string }> {
   if (!stripeEnabled()) throw badRequest('Stripe checkout is not enabled');
   const loaded = await withTenant(input.businessUnitId, async (tx) => {
@@ -398,6 +405,9 @@ export async function createCheckoutSession(input: {
   const checkoutAttempt = loaded.existingPayment
     ? loaded.existingPayment.checkoutAttempt + (retryable ? 1 : 0)
     : 1;
+  // Return the shopper to the host they started on, so a white-labelled checkout never lands them
+  // on the platform domain.
+  const origin = input.origin ?? env.WEB_ORIGIN;
   const session = await stripeClient().checkout.sessions.create(
     {
       mode: 'payment',
@@ -409,12 +419,21 @@ export async function createCheckoutSession(input: {
         metadata: { qinio_order_id: input.orderId },
         ...(fee > 0 ? { application_fee_amount: fee } : {}),
       },
-      success_url:
-        `${env.WEB_ORIGIN}/checkout/return?order=${encodeURIComponent(input.orderId)}` +
-        `&slug=${encodeURIComponent(input.businessUnitSlug)}`,
-      cancel_url:
-        `${env.WEB_ORIGIN}/checkout/return?order=${encodeURIComponent(input.orderId)}` +
-        `&slug=${encodeURIComponent(input.businessUnitSlug)}&cancelled=1`,
+      ...(input.guest
+        ? {
+            success_url: `${origin}/${encodeURIComponent(input.businessUnitSlug)}/thanks`,
+            cancel_url:
+              `${origin}/${encodeURIComponent(input.businessUnitSlug)}` +
+              `/order/${input.packageId}`,
+          }
+        : {
+            success_url:
+              `${origin}/checkout/return?order=${encodeURIComponent(input.orderId)}` +
+              `&slug=${encodeURIComponent(input.businessUnitSlug)}`,
+            cancel_url:
+              `${origin}/checkout/return?order=${encodeURIComponent(input.orderId)}` +
+              `&slug=${encodeURIComponent(input.businessUnitSlug)}&cancelled=1`,
+          }),
     },
     {
       stripeAccount: loaded.account.providerAccountId,

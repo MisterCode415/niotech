@@ -549,6 +549,80 @@ Install weekly renewal on the VM:
 0 3 * * 1 cd /home/azureuser/nio-platform && ./deploy/certs.sh >> /var/log/nio-certs.log 2>&1
 ```
 
+## Custom domains (white label)
+
+A business unit can serve its storefront, checkout, and patient portal from its own hostname, for
+example `order.your-clinic.com`. The data model, API, and UI are always present; what needs
+infrastructure is certificate issuance, so the public edge changes to Caddy when you opt in.
+
+### Enable the edge
+
+In `.env.production`:
+
+```bash
+CUSTOM_DOMAINS=true
+```
+
+Then redeploy (`./deploy/deploy.sh`). With this on:
+
+- Caddy owns ports 80 and 443 and issues certificates itself, for the platform host and, on demand,
+  for each tenant domain. `deploy/certs.sh` becomes a no-op and the weekly certbot cron above is not
+  needed. Remove it so it does not compete for port 80.
+- nginx keeps serving the app and proxying `/api`, but only on an internal port.
+- A certificate is requested for a hostname only if `GET /api/internal/domain-allowed` approves it,
+  which means a verified domain of an active business unit. The endpoint is blocked on both public
+  listeners.
+- `SERVER_NAME` must be a hostname tenants can CNAME to. Requires Docker Compose 2.24.4 or newer.
+- The caddy-data volume holds every issued certificate. Include it in volume backups; losing it
+  forces simultaneous re-issuance, which can hit Let's Encrypt rate limits.
+
+### Auth0
+
+The SPA is a single Auth0 application, so every tenant domain must be added to its callback,
+logout, web-origin, and allowed-origin lists. The API does this itself when a domain is verified (and
+removes it when disabled or deleted), which needs the management (M2M) client to hold `read:clients`
+and `update:clients`:
+
+```bash
+auth0 api post "client-grants" --data '{
+  "client_id": "<m2m-client-id>",
+  "audience": "https://qinio-dev.us.auth0.com/api/v2/",
+  "scope": ["read:clients", "update:clients"]
+}'
+```
+
+If a grant already exists, patch it with `client-grants/<id>` instead and include the existing
+scopes. If registration fails the domain is still activated, and the platform UI says sign-in from
+it will not work; fix the scopes and press **Re-check** to retry.
+
+Auth0 allows a limited number of entries per list (100 callbacks at the time of writing). Plan for a
+shared domain of your own, not hundreds of tenant domains, until that matters.
+
+Decision: Universal Login stays on the Auth0 tenant domain. A custom login domain
+(`login.example.com`) is a per-Auth0-tenant setting, not per business unit, so it cannot follow each
+tenant's own domain, and the only alternative, one Auth0 tenant per customer, is not worth the
+operational cost. A patient on `order.your-clinic.com` therefore sees the Auth0 login page for a
+moment during sign-in. Everything else (storefront, checkout, emails' links, portal) is on their
+domain. Set the Organization's logo and colors in Auth0 to soften the hand-off.
+
+### Onboard a tenant domain
+
+1. In the platform UI open **Platform → Custom domains**, choose the business unit, and add the
+   hostname (no `https://`, path, or port).
+2. Send the tenant the two DNS records shown (or let them read them on their **Branding** page):
+   - a `TXT` at `_qinio.<hostname>` proving ownership, and
+   - a `CNAME` from `<hostname>` to `SERVER_NAME` (use ALIAS/ANAME for a root domain).
+3. Press **Check DNS**. Only the TXT record is required to verify. The first verified domain
+   becomes the tenant's primary, which is used in emails and handoff links.
+4. Open `https://<hostname>`. The first request obtains the certificate and can take a few
+   seconds.
+
+Disabling or deleting a domain stops serving it immediately, and removing a business unit's access
+(suspending it) closes all of its domains at once.
+
+QR stickers always carry the platform origin (`WEB_ORIGIN`), not a tenant domain, because a printed
+label outlives any domain change.
+
 ## Health and diagnostics
 
 Public checks:

@@ -1,8 +1,10 @@
 import nodemailer from 'nodemailer';
 import { eq } from 'drizzle-orm';
+import { SALES_LEAD_MODEL_LABELS, type SalesLeadInput } from '@nio/shared';
 import { env, smtpIsLocalCapture } from '../env.js';
 import { withTenant } from '../db/client.js';
 import { notifications } from '../db/schema.js';
+import { tenantOrigin } from '../lib/hostTenant.js';
 import { describeError } from '../lib/logSafe.js';
 
 export interface NotificationIntent {
@@ -116,12 +118,69 @@ export async function sendInvitationEmail(input: {
 }
 
 /**
+ * Mails a marketing-site enquiry to the sales inbox. The prospect's address goes in `replyTo`, never
+ * `from`, so the relay's verified sender is untouched. Free text is escaped for the HTML part and
+ * the subject is built only from a single-line value. A failure is raised: unlike a notification,
+ * a lost lead cannot be rebuilt, so the caller must tell the visitor to try again.
+ */
+export async function sendSalesLeadEmail(input: {
+  to: string;
+  lead: Omit<SalesLeadInput, 'company_url'>;
+}): Promise<void> {
+  const { lead } = input;
+  const model = SALES_LEAD_MODEL_LABELS[lead.model];
+  const lines = [
+    ['Name', lead.name],
+    ['Email', lead.email],
+    ['Company', lead.company],
+    ['Website', lead.website ?? '(not given)'],
+    ['Model of interest', model],
+  ] as const;
+
+  await transport.sendMail({
+    from: env.SMTP_FROM,
+    to: input.to,
+    replyTo: { name: lead.name.replace(/["<>,;]/g, ''), address: lead.email },
+    subject: `QiNio sales lead: ${lead.company}`,
+    text:
+      lines.map(([label, value]) => `${label}: ${value}`).join('\n') +
+      `\n\nWhat they plan to sell:\n\n${lead.message}\n`,
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:600px;color:#17202a">
+        <h1 style="font-size:20px">New QiNio sales lead</h1>
+        <table style="border-collapse:collapse">
+          ${lines
+            .map(
+              ([label, value]) =>
+                `<tr><td style="padding:4px 16px 4px 0;color:#5f6b76">${escapeHtml(label)}</td>` +
+                `<td style="padding:4px 0">${escapeHtml(value)}</td></tr>`,
+            )
+            .join('')}
+        </table>
+        <h2 style="font-size:16px;margin-top:24px">What they plan to sell</h2>
+        <p style="white-space:pre-wrap">${escapeHtml(lead.message)}</p>
+      </div>
+    `,
+  });
+}
+
+/**
  * Notifications are deliberately dispatched after the clinical transaction commits: a mail server
  * being down must never roll back a lab result or a doctor's decision. In-app rows are written
  * first so the bell is correct even if SMTP fails.
  */
 export async function dispatchNotifications(intents: NotificationIntent[]): Promise<DispatchResult> {
   const result: DispatchResult = { recorded: 0, emailed: 0, emailFailures: 0 };
+
+  // Links point at the tenant's own domain when it has one, resolved once per tenant per batch.
+  const origins = new Map<string, string>();
+  const originFor = async (businessUnitId: string) => {
+    const known = origins.get(businessUnitId);
+    if (known) return known;
+    const origin = await tenantOrigin(businessUnitId).catch(() => env.WEB_ORIGIN);
+    origins.set(businessUnitId, origin);
+    return origin;
+  };
 
   for (const intent of intents) {
     let notificationId: string | null = null;
@@ -155,7 +214,9 @@ export async function dispatchNotifications(intents: NotificationIntent[]): Prom
         from: env.SMTP_FROM,
         to: intent.email,
         subject: intent.title,
-        text: `${intent.body}\n\n${intent.linkPath ? `${env.WEB_ORIGIN}${intent.linkPath}` : ''}`.trim(),
+        text: `${intent.body}\n\n${
+          intent.linkPath ? `${await originFor(intent.businessUnitId)}${intent.linkPath}` : ''
+        }`.trim(),
       });
       result.emailed += 1;
 

@@ -2,21 +2,14 @@ import { timingSafeEqual } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { and, eq } from 'drizzle-orm';
 import { externalPurchaseSchema, workspacePath } from '@nio/shared';
-import { authProvider } from '../auth/index.js';
 import { findPublicBusinessUnit } from '../auth/context.js';
-import { withPlatformScope, withTenant } from '../db/client.js';
+import { withTenant } from '../db/client.js';
 import { env } from '../env.js';
-import { conflict, forbidden, notFound } from '../lib/errors.js';
+import { forbidden, notFound } from '../lib/errors.js';
 import { generateOrderNumber } from '../lib/ids.js';
-import {
-  memberships,
-  orders,
-  packageTestTypes,
-  packages,
-  testTypes,
-  users,
-} from '../db/schema.js';
-import { dispatchNotifications, sendInvitationEmail } from '../services/notifications.js';
+import { orders, packageTestTypes, packages, testTypes } from '../db/schema.js';
+import { dispatchNotifications } from '../services/notifications.js';
+import { ensurePatient } from '../services/patients.js';
 import { dispatchPaidOrder } from '../services/paidOrder.js';
 import { recordEvent } from '../services/orderWorkflow.js';
 
@@ -84,50 +77,13 @@ export async function integrationRoutes(app: FastifyInstance) {
         return { pkg, composition };
       });
 
-      const invited = await authProvider().inviteUser({
-        orgId: businessUnit.auth0OrgId,
+      const patient = await ensurePatient({
+        businessUnit,
         email: input.patient.email,
         name: input.patient.name,
-        loginPath: `/login?org=${encodeURIComponent(slug)}&returnTo=${encodeURIComponent(workspacePath(slug, 'patient'))}`,
-      });
-      if (invited.signInUrl) {
-        await sendInvitationEmail({
-          email: input.patient.email,
-          name: input.patient.name,
-          passwordSetUrl: invited.passwordSetUrl,
-          signInUrl: invited.signInUrl,
-          workspaceName: businessUnit.name,
-          roleLabel: 'Patient',
-        });
-      }
-
-      const patient = await withPlatformScope(async (tx) => {
-        const [user] = await tx
-          .insert(users)
-          .values({
-            email: input.patient.email,
-            name: input.patient.name,
-            auth0UserId: invited.subject,
-            status: 'active',
-          })
-          .onConflictDoUpdate({
-            target: users.email,
-            set: { name: input.patient.name, status: 'active' },
-          })
-          .returning();
-        if (user!.auth0UserId !== invited.subject) {
-          throw conflict('Patient email is bound to another identity');
-        }
-        await tx
-          .insert(memberships)
-          .values({
-            businessUnitId: businessUnit.id,
-            userId: user!.id,
-            role: 'patient',
-            status: 'active',
-          })
-          .onConflictDoNothing();
-        return user!;
+        returnTo: workspacePath(slug, 'patient'),
+        invite: 'now',
+        reactivate: true,
       });
 
       const result = await withTenant(businessUnit.id, async (tx) => {

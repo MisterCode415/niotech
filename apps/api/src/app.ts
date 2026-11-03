@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyError } from 'fastify';
-import cors from '@fastify/cors';
+import cors, { type FastifyCorsOptionsDelegate } from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
 import rawBody from 'fastify-raw-body';
@@ -8,10 +8,13 @@ import { ZodError, z } from 'zod';
 import { env } from './env.js';
 import { HttpError } from './lib/errors.js';
 import { describeError } from './lib/logSafe.js';
+import { embedOriginFor } from './lib/embedCors.js';
+import { enforceHost } from './lib/hostTenant.js';
 import { attachActor } from './auth/context.js';
 import { healthRoutes } from './routes/health.js';
 import { authRoutes } from './routes/auth.js';
 import { platformRoutes } from './routes/platform.js';
+import { domainRoutes } from './routes/domains.js';
 import { businessUnitRoutes } from './routes/businessUnit.js';
 import { patientRoutes } from './routes/patient.js';
 import { fulfillmentRoutes } from './routes/fulfillment.js';
@@ -21,11 +24,13 @@ import { scanRoutes } from './routes/scan.js';
 import { notificationRoutes } from './routes/notifications.js';
 import { auditRoutes } from './routes/audit.js';
 import { publicRoutes } from './routes/public.js';
+import { leadRoutes } from './routes/leads.js';
 import { integrationRoutes } from './routes/integrations.js';
 import { paymentRoutes } from './routes/payments.js';
 import { stripeWebhookRoutes } from './routes/stripeWebhooks.js';
 import { simulationRoutes } from './routes/simulation.js';
 import { processCatalogSyncJobs, stripeEnabled } from './services/stripe.js';
+import { sweepPendingActivationInvites } from './services/activation.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -77,9 +82,37 @@ export async function buildApp() {
           },
   });
 
-  await app.register(cors, {
-    origin: env.NODE_ENV === 'development' ? true : [env.WEB_ORIGIN],
-    credentials: true,
+  // The marketing site is a separate origin that may call exactly one route, without credentials.
+  // Everything else keeps the web app's origin, so the marketing origin gains no wider access.
+  await app.register(cors, (): FastifyCorsOptionsDelegate => (request, callback) => {
+    const path = request.url.split('?')[0];
+    if (env.MARKETING_SITE_ORIGIN && path === '/api/public/leads') {
+      callback(null, {
+        origin: [env.MARKETING_SITE_ORIGIN],
+        methods: ['POST', 'OPTIONS'],
+        credentials: false,
+      });
+      return;
+    }
+
+    const fallback = {
+      origin: env.NODE_ENV === 'development' ? true : [env.WEB_ORIGIN],
+      credentials: true,
+    };
+
+    // The catalog widget on a tenant's own marketing site: its catalog read and buy-button call,
+    // for that tenant's registered origins only, never with credentials.
+    void embedOriginFor(request.url, request.headers.origin).then(
+      (origin) =>
+        callback(
+          null,
+          origin
+            ? { origin: [origin], methods: ['GET', 'POST', 'OPTIONS'], credentials: false }
+            : fallback,
+        ),
+      // A lookup failure must not open anything up; it just means no cross-origin access.
+      () => callback(null, fallback),
+    );
   });
 
   await app.register(multipart, {
@@ -99,9 +132,15 @@ export async function buildApp() {
   });
 
   app.decorateRequest('actor', null);
+  app.decorateRequest('hostTenant', null as never);
 
   app.addHook('onRequest', async (request, reply) => {
     reply.header('x-request-id', request.id);
+  });
+
+  // Custom domains: resolve the Host header to a tenant before anything else looks at the request.
+  app.addHook('onRequest', async (request) => {
+    await enforceHost(request);
   });
 
   app.addHook('preHandler', async (request) => {
@@ -131,10 +170,12 @@ export async function buildApp() {
   await app.register(healthRoutes);
   await app.register(authRoutes);
   await app.register(publicRoutes);
+  await app.register(leadRoutes);
   await app.register(integrationRoutes);
   await app.register(stripeWebhookRoutes);
   await app.register(paymentRoutes);
   await app.register(platformRoutes);
+  await app.register(domainRoutes);
   await app.register(businessUnitRoutes);
   await app.register(patientRoutes);
   await app.register(fulfillmentRoutes);
@@ -153,6 +194,17 @@ export async function buildApp() {
     }, 60_000);
     catalogTimer.unref();
     app.addHook('onClose', async () => clearInterval(catalogTimer));
+  }
+
+  // Retries guest activation invites whose first send failed. Cheap: it reads a partial index.
+  if (env.NODE_ENV !== 'test') {
+    const activationTimer = setInterval(() => {
+      void sweepPendingActivationInvites().catch((error) =>
+        app.log.error({ err: describeError(error) }, 'Activation invite sweep failed'),
+      );
+    }, 60_000);
+    activationTimer.unref();
+    app.addHook('onClose', async () => clearInterval(activationTimer));
   }
 
   return app;

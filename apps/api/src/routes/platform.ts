@@ -20,6 +20,7 @@ import {
   users,
 } from '../db/schema.js';
 import { conflict, notFound } from '../lib/errors.js';
+import { clearHostCache } from '../lib/hostTenant.js';
 import { decryptSecret, encryptSecret, maskSecret } from '../lib/secrets.js';
 import { sendInvitationEmail } from '../services/notifications.js';
 import { loadPlatformAiSettings } from '../services/reportChat.js';
@@ -134,6 +135,8 @@ export async function platformRoutes(app: FastifyInstance) {
     );
 
     if (!updated) throw notFound('Business unit not found');
+    // A suspended tenant's custom domains must stop serving immediately, not after the cache TTL.
+    clearHostCache();
     return { businessUnit: updated };
   });
 

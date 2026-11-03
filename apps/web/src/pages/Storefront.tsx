@@ -5,6 +5,7 @@ import { api } from '../lib/api';
 import { money } from '../lib/format';
 import { Loading, Empty } from '../components/ui';
 import { useAuth } from '../lib/auth';
+import { BrandHeader } from '../components/BrandHeader';
 
 interface PackageRow {
   id: string;
@@ -50,6 +51,7 @@ export function Storefront() {
   return (
     <div className="page">
       <div className="hero">
+        <BrandHeader />
         <div className="spread" style={{ marginBottom: 18, justifyContent: 'flex-end' }}>
           {me ? (
             <Link
@@ -130,8 +132,8 @@ export function Storefront() {
                     Order kit
                   </Link>
                 ) : (
-                  <Link className="btn" to={`/${slug}/register?package=${pkg.id}`}>
-                    Register to order
+                  <Link className="btn primary" to={`/${slug}/order/${pkg.id}`}>
+                    Order kit
                   </Link>
                 )}
               </div>

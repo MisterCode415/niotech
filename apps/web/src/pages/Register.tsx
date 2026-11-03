@@ -4,6 +4,7 @@ import { workspacePath } from '@nio/shared';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { Alert, Field } from '../components/ui';
+import { BrandHeader } from '../components/BrandHeader';
 
 export function Register() {
   const { slug = '' } = useParams();
@@ -50,6 +51,7 @@ export function Register() {
   return (
     <div className="centered">
       <div className="auth-card">
+        <BrandHeader />
         <Link to={`/${slug}`} className="small muted">
           ← Back to storefront
         </Link>

@@ -9,6 +9,9 @@ upstream nio_api {
 map $uri $nio_cache_control {
     # Vite emits content-hashed asset filenames, so those are safe to cache forever.
     ~^/assets/  "public, max-age=31536000, immutable";
+    # The marketing-site widget has a stable URL, so it cannot be immutable; five minutes keeps
+    # fixes flowing while sparing the origin one request per marketing-page view.
+    /embed.js   "public, max-age=300";
     # Everything else is the SPA shell or a PHI-bearing API response.
     default     "no-store";
 }
@@ -51,6 +54,11 @@ server {
     # error rather than a bare nginx 413.
     client_max_body_size 25m;
 
+    # Network-internal endpoints (the custom-domain certificate gate) are never public.
+    location /api/internal/ {
+        return 404;
+    }
+
     location /api/ {
         proxy_pass http://nio_api;
         proxy_http_version 1.1;
@@ -68,6 +76,45 @@ server {
     index index.html;
 
     # Client-side routing: deep links such as /scan/<token> must return the SPA shell.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+
+# Internal plain-HTTP listener for the custom-domain edge (deploy/Caddyfile, enabled with
+# CUSTOM_DOMAINS=true). Caddy terminates TLS for the platform host and every tenant domain and
+# forwards here with the visitor's original Host header, which is what lets the API resolve a
+# hostname to a tenant. It is never published: only containers on the compose network reach it.
+# Security headers other than cache policy are Caddy's job, so they are not repeated here.
+server {
+    listen 8080 default_server;
+    server_name _;
+
+    add_header Cache-Control $nio_cache_control always;
+    client_max_body_size 25m;
+
+    # The API is reached through Caddy's public listener, never this one, so the internal-only
+    # certificate gate must not be reachable by way of the edge.
+    location /api/internal/ {
+        return 404;
+    }
+
+    location /api/ {
+        proxy_pass http://nio_api;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        # The hop from Caddy is plain HTTP, but the visitor's connection was not.
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Connection        "";
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
+    }
+
+    root /usr/share/nginx/html;
+    index index.html;
+
     location / {
         try_files $uri $uri/ /index.html;
     }

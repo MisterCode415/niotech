@@ -12,6 +12,7 @@ import {
   packagePaymentMappings,
   packages,
 } from '../db/schema.js';
+import { sendOrderActivationInvites } from '../services/activation.js';
 import { dispatchNotifications, type NotificationIntent } from '../services/notifications.js';
 import { dispatchPaidOrder } from '../services/paidOrder.js';
 import { recordEvent } from '../services/orderWorkflow.js';
@@ -63,6 +64,7 @@ export async function stripeWebhookRoutes(app: FastifyInstance) {
     }
 
     const intents: NotificationIntent[] = [];
+    const paidOrderIds: string[] = [];
     await withTenant(account.businessUnitId, async (tx) => {
       let paymentId: string | null = null;
       let payment: typeof payments.$inferSelect | undefined;
@@ -244,6 +246,7 @@ export async function stripeWebhookRoutes(app: FastifyInstance) {
                   actorUserId: null,
                 })),
               );
+              paidOrderIds.push(order.id);
             }
           } else {
             await tx
@@ -324,6 +327,7 @@ export async function stripeWebhookRoutes(app: FastifyInstance) {
                 actorUserId: null,
               })),
             );
+            paidOrderIds.push(order.id);
           }
         } else if (event.type === 'payment_intent.payment_failed') {
           await tx
@@ -449,6 +453,9 @@ export async function stripeWebhookRoutes(app: FastifyInstance) {
     });
 
     await dispatchNotifications(intents);
+    // After commit, and only for orders that just transitioned to paid. A guest shopper's account
+    // is provisioned here; a failure is retried by the sweep and must not fail the webhook.
+    await sendOrderActivationInvites(paidOrderIds);
     return reply.status(200).send({ received: true });
   });
 }
