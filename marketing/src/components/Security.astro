@@ -1,0 +1,121 @@
+---
+const safeguards = [
+  {
+    title: 'Tenant isolation',
+    body: "Each business unit's data is separated in the application and again by database row-level security.",
+  },
+  {
+    title: 'Results held until release',
+    body: 'A customer cannot read results while the lab or clinician still has them.',
+  },
+  {
+    title: 'Access audit trail',
+    body: 'Views of results, files, and reports are recorded in an append-only log: who, when, and from which request.',
+  },
+  {
+    title: 'Disclosure reports',
+    body: 'Admins can export an accounting of disclosures for a patient or an order.',
+  },
+  {
+    title: 'Encryption',
+    body: 'TLS in transit. Lab files and the database are encrypted at rest on Azure infrastructure covered by a Microsoft BAA.',
+  },
+  {
+    title: 'Staff MFA and idle logout',
+    body: 'Multi-factor sign-in can be required for every staff role, and idle sessions sign out automatically.',
+  },
+  {
+    title: 'Minimal PHI elsewhere',
+    body: 'No clinical details are sent to the payment provider, only opaque order and package IDs.',
+  },
+  {
+    title: 'AI with guardrails',
+    body: 'In production, report Q&A only uses providers that have been approved as BAA-covered.',
+  },
+  {
+    title: 'Backups',
+    body: 'Database point-in-time restore, long-term archives, and versioned lab files.',
+  },
+];
+---
+
+<section class="section soft" id="security">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Security and HIPAA</p>
+      <h2>Built toward HIPAA requirements</h2>
+      <p>
+        Handling lab results means handling protected health information. QiNio is engineered around
+        HIPAA's safeguards, and we are open about where that work stands.
+      </p>
+    </div>
+
+    <div class="grid cols">
+      {
+        safeguards.map((item) => (
+          <div class="card">
+            <h3>{item.title}</h3>
+            <p>{item.body}</p>
+          </div>
+        ))
+      }
+    </div>
+
+    <div class="plain">
+      <h3>What we say plainly</h3>
+      <ul>
+        <li>
+          QiNio is working toward a posture that can be formally assessed. We do not claim a HIPAA
+          certification.
+        </li>
+        <li>
+          A Business Associate Agreement is arranged with each customer during onboarding. Each
+          business unit remains responsible for its own compliance program.
+        </li>
+        <li>This page is not legal advice.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<style>
+  .cols {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .card h3 {
+    font-size: 1.05rem;
+  }
+  .card p {
+    margin-top: 8px;
+    color: var(--ink-soft);
+    font-size: 0.96rem;
+  }
+  .plain {
+    margin-top: 32px;
+    padding: 28px 32px;
+    border-left: 4px solid var(--accent);
+    border-radius: 0 var(--radius) var(--radius) 0;
+    background: var(--bg);
+  }
+  .plain h3 {
+    font-size: 1.1rem;
+  }
+  .plain ul {
+    margin: 12px 0 0;
+    padding-left: 20px;
+    color: var(--ink-soft);
+  }
+  .plain li {
+    margin-top: 6px;
+  }
+  @media (max-width: 900px) {
+    .cols {
+      grid-template-columns: 1fr 1fr;
+    }
+  }
+  @media (max-width: 600px) {
+    .cols {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

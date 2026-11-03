@@ -1,0 +1,129 @@
+---
+const steps = [
+  { title: 'Customer buys', body: 'On your branded storefront, or from your own site.' },
+  { title: 'Kit ships', body: 'Fulfillment sends it with a QR sticker and tracking number.' },
+  { title: 'Sample collected', body: 'The customer mails it back with the prepaid lab label.' },
+  { title: 'Lab analyses', body: 'The lab checks the sample in and uploads results.' },
+  { title: 'Clinician reviews', body: 'Optional, per package. A doctor approves an interpretation.', optional: true },
+  { title: 'Results released', body: 'The customer sees results only once they are released.' },
+];
+
+const points = [
+  {
+    title: 'One scan, three roles',
+    body: 'The QR code on the kit shows fulfillment, the customer, and the lab each their own next action.',
+  },
+  {
+    title: 'A full timeline',
+    body: 'Every status change records who made it and when. No step can be skipped and none can go backwards.',
+  },
+  {
+    title: 'Your packages, your rules',
+    body: 'Choose the tests in a kit and whether a clinician must review. Each order keeps a snapshot of what was bought, so catalog changes never alter a kit in flight.',
+  },
+];
+---
+
+<section class="section soft" id="how-it-works">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">What the platform does</p>
+      <h2>One workflow from checkout to results</h2>
+      <p>
+        Every kit follows the same tracked path. Each step belongs to one role, and the platform
+        refuses any move that skips a step or comes from the wrong person.
+      </p>
+    </div>
+
+    <ol class="steps">
+      {
+        steps.map((step, i) => (
+          <li class:list={['card', { optional: step.optional }]}>
+            <span class="num" aria-hidden="true">{i + 1}</span>
+            <h3>{step.title}</h3>
+            <p>{step.body}</p>
+            {step.optional && <span class="tag">Optional</span>}
+          </li>
+        ))
+      }
+    </ol>
+
+    <div class="points grid">
+      {
+        points.map((point) => (
+          <div>
+            <h3>{point.title}</h3>
+            <p>{point.body}</p>
+          </div>
+        ))
+      }
+    </div>
+  </div>
+</section>
+
+<style>
+  .steps {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .steps li {
+    position: relative;
+  }
+  .steps li.optional {
+    border-style: dashed;
+  }
+  .num {
+    display: inline-grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    margin-bottom: 14px;
+    border-radius: 50%;
+    background: var(--brand);
+    color: #fff;
+    font-size: 0.9rem;
+    font-weight: 700;
+  }
+  .steps h3 {
+    font-size: 1.1rem;
+  }
+  .steps p {
+    margin-top: 8px;
+    color: var(--ink-soft);
+    font-size: 0.97rem;
+  }
+  .tag {
+    position: absolute;
+    top: 18px;
+    right: 18px;
+    padding: 2px 10px;
+    border-radius: 999px;
+    background: rgba(15, 181, 165, 0.14);
+    color: #0a7d72;
+    font-size: 0.75rem;
+    font-weight: 700;
+  }
+  .points {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 32px;
+    margin-top: 52px;
+  }
+  .points h3 {
+    font-size: 1.1rem;
+  }
+  .points p {
+    margin-top: 8px;
+    color: var(--ink-soft);
+    font-size: 0.97rem;
+  }
+  @media (max-width: 860px) {
+    .steps,
+    .points {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

@@ -1,0 +1,199 @@
+---
+const endpoint = import.meta.env.PUBLIC_LEAD_ENDPOINT ?? 'http://localhost:4000/api/public/leads';
+---
+
+<section class="section soft" id="contact">
+  <div class="wrap narrow">
+    <div class="section-head">
+      <p class="eyebrow">Contact</p>
+      <h2>Talk to us</h2>
+      <p>Tell us what you want to sell. We will reply by email.</p>
+    </div>
+
+    <form id="lead-form" class="card" method="post" action={endpoint} novalidate data-endpoint={endpoint}>
+      <div class="row">
+        <label>
+          <span>Name</span>
+          <input name="name" type="text" autocomplete="name" required maxlength="120" />
+        </label>
+        <label>
+          <span>Work email</span>
+          <input name="email" type="email" autocomplete="email" required maxlength="254" />
+        </label>
+      </div>
+
+      <div class="row">
+        <label>
+          <span>Company</span>
+          <input name="company" type="text" autocomplete="organization" required maxlength="160" />
+        </label>
+        <label>
+          <span>Website <em>(optional)</em></span>
+          <input name="website" type="url" autocomplete="url" placeholder="https://" maxlength="300" />
+        </label>
+      </div>
+
+      <label>
+        <span>Model of interest</span>
+        <select name="model" required>
+          <option value="managed">Sell kits through QiNio</option>
+          <option value="byo">Bring our own fulfillment, lab, and clinicians</option>
+          <option value="unsure" selected>Not sure yet</option>
+        </select>
+      </label>
+
+      <label>
+        <span>What are you planning to sell?</span>
+        <textarea
+          name="message"
+          rows="6"
+          required
+          minlength="20"
+          maxlength="2000"
+          placeholder="The tests or kits, who they are for, and where you sell today."></textarea>
+      </label>
+
+      <!-- Honeypot: people never see or fill this in. -->
+      <div class="trap" aria-hidden="true">
+        <label>
+          Company website
+          <input name="company_url" type="text" tabindex="-1" autocomplete="off" />
+        </label>
+      </div>
+
+      <p class="privacy">Do not include patient information in this form.</p>
+
+      <div class="actions">
+        <button class="btn" type="submit">Send</button>
+        <p id="lead-status" role="status" aria-live="polite"></p>
+      </div>
+    </form>
+  </div>
+</section>
+
+<style>
+  .narrow {
+    max-width: 720px;
+  }
+  form {
+    display: grid;
+    gap: 18px;
+    padding: 32px;
+  }
+  .row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+  }
+  label {
+    display: grid;
+    gap: 6px;
+    font-size: 0.92rem;
+    font-weight: 600;
+  }
+  label em {
+    color: var(--ink-soft);
+    font-style: normal;
+    font-weight: 400;
+  }
+  input,
+  select,
+  textarea {
+    width: 100%;
+    padding: 11px 13px;
+    border: 1px solid #c4cddd;
+    border-radius: 9px;
+    background: #fff;
+    color: var(--ink);
+    font: inherit;
+    font-weight: 400;
+  }
+  input[aria-invalid='true'],
+  textarea[aria-invalid='true'] {
+    border-color: var(--danger);
+  }
+  textarea {
+    resize: vertical;
+  }
+  .trap {
+    position: absolute;
+    left: -9999px;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+  }
+  .privacy {
+    color: var(--ink-soft);
+    font-size: 0.88rem;
+  }
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 16px;
+  }
+  #lead-status {
+    font-size: 0.95rem;
+    font-weight: 500;
+  }
+  #lead-status.ok {
+    color: var(--ok);
+  }
+  #lead-status.err {
+    color: var(--danger);
+  }
+  @media (max-width: 640px) {
+    .row {
+      grid-template-columns: 1fr;
+    }
+    form {
+      padding: 22px;
+    }
+  }
+</style>
+
+<script>
+  const form = document.querySelector<HTMLFormElement>('#lead-form');
+  const status = document.querySelector<HTMLElement>('#lead-status');
+
+  function show(kind: 'ok' | 'err' | '', text: string) {
+    if (!status) return;
+    status.className = kind;
+    status.textContent = text;
+  }
+
+  form?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!form || !status) return;
+
+    // Clear stale validation state, then let the browser's own constraints speak first.
+    form.querySelectorAll('[aria-invalid]').forEach((el) => el.removeAttribute('aria-invalid'));
+    if (!form.checkValidity()) {
+      form.querySelectorAll<HTMLInputElement>(':invalid').forEach((el) => el.setAttribute('aria-invalid', 'true'));
+      form.reportValidity();
+      show('err', 'Please complete the highlighted fields.');
+      return;
+    }
+
+    const button = form.querySelector<HTMLButtonElement>('button[type="submit"]');
+    const data = Object.fromEntries(new FormData(form).entries());
+    if (typeof data.website === 'string' && data.website.trim() === '') delete data.website;
+
+    button?.setAttribute('disabled', '');
+    show('', 'Sending...');
+    try {
+      const response = await fetch(form.dataset.endpoint ?? form.action, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      if (!response.ok) throw new Error(String(response.status));
+      form.reset();
+      show('ok', 'Thanks. We review every request and will email you soon.');
+    } catch {
+      show('err', 'Something went wrong. Please try again in a moment.');
+    } finally {
+      button?.removeAttribute('disabled');
+    }
+  });
+</script>

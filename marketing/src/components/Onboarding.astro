@@ -1,0 +1,87 @@
+---
+const steps = [
+  { title: 'Tell us about your idea', body: 'Send the short form below.' },
+  {
+    title: 'We review',
+    body: 'We look at your use case, product intent, and market fit for our lab lifecycle.',
+  },
+  {
+    title: 'We reach back out',
+    body: 'If it fits, we agree the model (managed or bring-your-own) and the pricing.',
+  },
+  {
+    title: 'Onboarding',
+    body: 'We set up your business unit, storefront, team, and payments.',
+  },
+];
+---
+
+<section class="section" id="onboarding">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">How onboarding works</p>
+      <h2>We work with a small number of businesses, on purpose</h2>
+      <p>
+        There is no self-serve signup. Lab testing is regulated and sensitive, so we talk to every
+        business unit before it goes live.
+      </p>
+    </div>
+
+    <ol class="steps">
+      {
+        steps.map((step) => (
+          <li>
+            <h3>{step.title}</h3>
+            <p>{step.body}</p>
+          </li>
+        ))
+      }
+    </ol>
+  </div>
+</section>
+
+<style>
+  .steps {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 24px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    counter-reset: step;
+  }
+  .steps li {
+    padding-top: 18px;
+    border-top: 3px solid var(--brand);
+    counter-increment: step;
+  }
+  .steps li::before {
+    content: '0' counter(step);
+    display: block;
+    margin-bottom: 8px;
+    color: var(--brand);
+    font-size: 0.85rem;
+    font-weight: 700;
+  }
+  h3 {
+    font-size: 1.1rem;
+  }
+  p {
+    margin-top: 8px;
+    color: var(--ink-soft);
+    font-size: 0.96rem;
+  }
+  .section-head p {
+    font-size: 1.08rem;
+  }
+  @media (max-width: 860px) {
+    .steps {
+      grid-template-columns: 1fr 1fr;
+    }
+  }
+  @media (max-width: 520px) {
+    .steps {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

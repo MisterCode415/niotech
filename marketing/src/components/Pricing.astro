@@ -1,0 +1,82 @@
+---
+const tiers = [
+  {
+    name: 'Platform fee',
+    price: '$350',
+    unit: 'per month, per business unit',
+    body: 'Your branded site, your team portals, and support. Every business unit pays this regardless of which model it uses.',
+  },
+  {
+    name: 'QiNio-managed stage',
+    price: '50%',
+    unit: 'fee on each stage',
+    body: 'All-inclusive. When QiNio provides the fulfillment, lab, or clinician for a stage, a 50% fee applies to that stage. No separate vendor contracts.',
+  },
+  {
+    name: 'Bring-your-own stage',
+    price: '10%',
+    unit: 'markup on each stage',
+    body: 'When you run a stage with your own partners, a 10% markup applies to that stage for coordination, tracking, and audit.',
+  },
+];
+---
+
+<section class="section" id="pricing">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Pricing</p>
+      <h2>Simple, per-business-unit pricing</h2>
+      <p>This is how pricing is structured. Final figures are confirmed during onboarding.</p>
+    </div>
+
+    <div class="grid cols">
+      {
+        tiers.map((tier) => (
+          <div class="card">
+            <h3>{tier.name}</h3>
+            <p class="price">{tier.price}</p>
+            <p class="unit">{tier.unit}</p>
+            <p class="body">{tier.body}</p>
+          </div>
+        ))
+      }
+    </div>
+  </div>
+</section>
+
+<style>
+  .cols {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  h3 {
+    font-size: 1.05rem;
+    color: var(--ink-soft);
+    font-weight: 600;
+    letter-spacing: 0;
+  }
+  .price {
+    margin-top: 14px;
+    font-size: 2.8rem;
+    font-weight: 800;
+    letter-spacing: -0.04em;
+    line-height: 1;
+  }
+  .unit {
+    margin-top: 6px;
+    color: var(--brand);
+    font-size: 0.9rem;
+    font-weight: 600;
+  }
+  .body {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+    color: var(--ink-soft);
+    font-size: 0.96rem;
+  }
+  @media (max-width: 860px) {
+    .cols {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

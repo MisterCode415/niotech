@@ -19,7 +19,9 @@
     "db:reset": "docker compose down -v && pnpm run db:up && pnpm run db:migrate && pnpm run db:seed",
     "db:generate": "pnpm -F @nio/api db:generate",
     "db:migrate": "pnpm -F @nio/api db:migrate",
-    "db:seed": "pnpm -F @nio/api db:seed"
+    "db:seed": "pnpm -F @nio/api db:seed",
+    "marketing:dev": "pnpm -F @nio/marketing dev",
+    "marketing:build": "pnpm -F @nio/marketing build"
   },
   "pnpm": {
     "neverBuiltDependencies": ["tesseract.js"],

@@ -1,0 +1,91 @@
+---
+const features = [
+  { title: 'Branded storefront', body: 'Your name, your page, your packages. Edit the page content yourself.' },
+  {
+    title: 'Works with your site',
+    body: 'Send shoppers from your own domain into checkout and bring them back, with campaign tags preserved.',
+  },
+  {
+    title: 'Packages that stay honest',
+    body: 'Change a price or test list and sold packages keep their history. Every order stores what was bought.',
+  },
+  {
+    title: 'Payments to your account',
+    body: 'Stripe Connect makes you the merchant. Refunds and disputes are handled from your admin.',
+  },
+  {
+    title: 'Guest checkout',
+    body: 'Customers can buy first and activate their account from the confirmation email.',
+  },
+  { title: 'Fulfillment tooling', body: 'An order queue, QR stickers, tracking entry, and a charges ledger.' },
+  {
+    title: 'Chain of custody',
+    body: 'Every hand-off from your warehouse to the lab is scanned and logged.',
+  },
+  { title: 'Lab results handling', body: 'Sample check-in, PDF upload, and release controls.' },
+  {
+    title: 'Clinician review',
+    body: 'Optional doctor sign-off with an AI-assisted draft that the clinician controls.',
+  },
+  {
+    title: 'Results and Q&A',
+    body: 'Results appear only when released. Customers can ask questions about their report.',
+  },
+  {
+    title: 'Team roles',
+    body: 'Give each person only the portal and data their job needs: admin, fulfillment, lab, doctor.',
+  },
+  {
+    title: 'Notifications',
+    body: 'Customers and staff are told what happened as it happens, by email and in the app.',
+  },
+  {
+    title: 'Audit and disclosure reports',
+    body: "Look up everything that happened to a patient's data and export it.",
+  },
+];
+---
+
+<section class="section soft" id="features">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Features</p>
+      <h2>Everything a testing brand needs, already connected</h2>
+    </div>
+
+    <div class="grid cols">
+      {
+        features.map((feature) => (
+          <div class="card">
+            <h3>{feature.title}</h3>
+            <p>{feature.body}</p>
+          </div>
+        ))
+      }
+    </div>
+  </div>
+</section>
+
+<style>
+  .cols {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  h3 {
+    font-size: 1.05rem;
+  }
+  p {
+    margin-top: 8px;
+    color: var(--ink-soft);
+    font-size: 0.96rem;
+  }
+  @media (max-width: 900px) {
+    .cols {
+      grid-template-columns: 1fr 1fr;
+    }
+  }
+  @media (max-width: 600px) {
+    .cols {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
