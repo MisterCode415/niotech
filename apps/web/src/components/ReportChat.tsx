@@ -1,4 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { DEFAULT_AI_DISCLAIMER } from '@nio/shared';
@@ -89,6 +91,14 @@ export function ReportChat({ base, orderId }: { base: string; orderId: string })
     onError: (err: Error) => setError(err.message),
   });
 
+  const messages = threadId ? (thread.data?.messages ?? []) : [];
+  const logRef = useRef<HTMLDivElement>(null);
+  const lastMessageId = messages.at(-1)?.id;
+  useEffect(() => {
+    const log = logRef.current;
+    if (log) log.scrollTop = log.scrollHeight;
+  }, [threadId, lastMessageId]);
+
   if (!threads.data?.enabled) {
     return (
       <p className="small muted" style={{ margin: 0 }}>
@@ -99,7 +109,6 @@ export function ReportChat({ base, orderId }: { base: string; orderId: string })
 
   const disclaimer = threads.data.disclaimer || DEFAULT_AI_DISCLAIMER;
   const list = threads.data.threads;
-  const messages = threadId ? (thread.data?.messages ?? []) : [];
 
   return (
     <>
@@ -137,22 +146,39 @@ export function ReportChat({ base, orderId }: { base: string; orderId: string })
         </div>
       ) : null}
 
-      <div className="stack" style={{ margin: '12px 0' }}>
-        {threadId && thread.isLoading ? <p className="small muted">Loading conversation…</p> : null}
-        {messages.map((message) => (
-          <div key={message.id}>
-            <strong className="small">{message.role === 'user' ? 'You' : 'Assistant'}</strong>
-            <p className="small" style={{ whiteSpace: 'pre-wrap', margin: '4px 0 0' }}>
-              {message.content}
-            </p>
-            {message.role === 'assistant' ? (
-              <p className="small muted" style={{ marginTop: 6 }}>
-                {disclaimer}
-              </p>
-            ) : null}
-          </div>
-        ))}
-      </div>
+      {threadId && thread.isLoading ? <p className="small muted">Loading conversation…</p> : null}
+      {messages.length > 0 ? (
+        <div className="chat-log" ref={logRef}>
+          {messages.map((message) => (
+            <div key={message.id} className={`chat-message ${message.role}`}>
+              <strong className="small">{message.role === 'user' ? 'You' : 'Assistant'}</strong>
+              {message.role === 'assistant' ? (
+                <>
+                  <div className="chat-markdown small">
+                    <Markdown
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        a: ({ node: _node, ...props }) => (
+                          <a {...props} target="_blank" rel="noopener noreferrer" />
+                        ),
+                      }}
+                    >
+                      {message.content}
+                    </Markdown>
+                  </div>
+                  <p className="small muted" style={{ margin: '6px 0 0' }}>
+                    {disclaimer}
+                  </p>
+                </>
+              ) : (
+                <p className="small" style={{ whiteSpace: 'pre-wrap', margin: '4px 0 0' }}>
+                  {message.content}
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       <Alert tone="error">{error}</Alert>
       {outOfCredits || threads.data.credits.exhausted ? (
