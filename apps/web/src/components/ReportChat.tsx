@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { DEFAULT_AI_DISCLAIMER } from '@nio/shared';
-import { api } from '../lib/api';
+import { api, ApiError } from '../lib/api';
 import { date } from '../lib/format';
 import { Alert, Field } from './ui';
 
@@ -26,12 +26,18 @@ export function ReportChat({ base, orderId }: { base: string; orderId: string })
   const threadId = searchParams.get('thread');
   const [prompt, setPrompt] = useState('');
   const [error, setError] = useState('');
+  const [outOfCredits, setOutOfCredits] = useState(false);
 
   const threadsKey = ['patient', 'threads', orderId];
   const threads = useQuery({
     queryKey: threadsKey,
     queryFn: () =>
-      api<{ enabled: boolean; disclaimer: string; threads: ThreadSummary[] }>(`${base}/threads`),
+      api<{
+        enabled: boolean;
+        disclaimer: string;
+        credits: { exhausted: boolean };
+        threads: ThreadSummary[];
+      }>(`${base}/threads`),
   });
 
   const thread = useQuery({
@@ -63,7 +69,15 @@ export function ReportChat({ base, orderId }: { base: string; orderId: string })
       void queryClient.invalidateQueries({ queryKey: threadsKey });
       void queryClient.invalidateQueries({ queryKey: ['patient', 'thread', orderId, result.threadId] });
     },
-    onError: (err: Error) => setError(err.message),
+    onError: (err: Error) => {
+      if (err instanceof ApiError && err.code === 'OUT_OF_CREDITS') {
+        setError('');
+        void queryClient.invalidateQueries({ queryKey: threadsKey });
+        setOutOfCredits(true);
+        return;
+      }
+      setError(err.message);
+    },
   });
 
   const archive = useMutation({
@@ -141,20 +155,29 @@ export function ReportChat({ base, orderId }: { base: string; orderId: string })
       </div>
 
       <Alert tone="error">{error}</Alert>
-      <Field label={threadId ? 'Ask a follow-up' : 'Start a new conversation about this report'}>
-        <textarea
-          value={prompt}
-          onChange={(event) => setPrompt(event.target.value)}
-          placeholder="What does this marker mean?"
-        />
-      </Field>
-      <button
-        className="primary"
-        onClick={() => ask.mutate()}
-        disabled={!prompt.trim() || ask.isPending}
-      >
-        {ask.isPending ? 'Thinking…' : 'Send'}
-      </button>
+      {outOfCredits || threads.data.credits.exhausted ? (
+        <p className="small muted" style={{ margin: 0 }}>
+          You've used the AI allowance included with this report. Your saved conversations stay
+          available above.
+        </p>
+      ) : (
+        <>
+          <Field label={threadId ? 'Ask a follow-up' : 'Start a new conversation about this report'}>
+            <textarea
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              placeholder="What does this marker mean?"
+            />
+          </Field>
+          <button
+            className="primary"
+            onClick={() => ask.mutate()}
+            disabled={!prompt.trim() || ask.isPending}
+          >
+            {ask.isPending ? 'Thinking…' : 'Send'}
+          </button>
+        </>
+      )}
     </>
   );
 }

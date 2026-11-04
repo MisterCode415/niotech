@@ -22,8 +22,15 @@ import {
 import { conflict, notFound } from '../lib/errors.js';
 import { clearHostCache } from '../lib/hostTenant.js';
 import { decryptSecret, encryptSecret, maskSecret } from '../lib/secrets.js';
+import { probeProvider } from '../services/ai.js';
 import { sendInvitationEmail } from '../services/notifications.js';
-import { loadPlatformAiSettings } from '../services/reportChat.js';
+import { loadPlatformAiSettings, providerConfig } from '../services/reportChat.js';
+
+function authFields(input: { authStyle: 'bearer' | 'header'; authHeaderName?: string }) {
+  return input.authStyle === 'header'
+    ? { authStyle: 'header' as const, authHeaderName: input.authHeaderName ?? null }
+    : { authStyle: 'bearer' as const, authHeaderName: null };
+}
 
 const idParam = z.object({ id: z.uuid() });
 
@@ -163,13 +170,19 @@ export async function platformRoutes(app: FastifyInstance) {
       const settings = await loadPlatformAiSettings(tx);
       const providers = await tx.select().from(platformLlmProviders).orderBy(platformLlmProviders.sortOrder);
       return {
-        settings: { railsPrompt: settings.railsPrompt, disclaimer: settings.disclaimer },
+        settings: {
+          railsPrompt: settings.railsPrompt,
+          disclaimer: settings.disclaimer,
+          perReportBudgetUsd: Number(settings.perReportBudgetUsd),
+        },
         providers: providers.map((provider) => ({
           id: provider.id,
           name: provider.name,
           apiUrl: provider.apiUrl,
           apiKeyMasked: maskSecret(decryptSecret(provider.apiKeyCiphertext)),
           hasApiKey: Boolean(provider.apiKeyCiphertext),
+          authStyle: provider.authStyle,
+          authHeaderName: provider.authHeaderName,
           model: provider.model,
           customHeaders: provider.customHeaders,
           inputTokenCostPerMillion: Number(provider.inputTokenCostPerMillion),
@@ -195,6 +208,7 @@ export async function platformRoutes(app: FastifyInstance) {
         .set({
           railsPrompt: input.railsPrompt,
           disclaimer: input.disclaimer,
+          perReportBudgetUsd: input.perReportBudgetUsd.toFixed(2),
           updatedAt: new Date(),
         })
         .where(eq(platformAiSettings.id, existing.id))
@@ -217,6 +231,7 @@ export async function platformRoutes(app: FastifyInstance) {
           name: input.name,
           apiUrl: input.apiUrl,
           apiKeyCiphertext: encryptSecret(apiKey),
+          ...authFields(input),
           model: input.model,
           customHeaders: input.customHeaders,
           inputTokenCostPerMillion: String(input.inputTokenCostPerMillion),
@@ -264,6 +279,7 @@ export async function platformRoutes(app: FastifyInstance) {
         .set({
           name: input.name,
           apiUrl: input.apiUrl,
+          ...authFields(input),
           model: input.model,
           customHeaders: input.customHeaders,
           inputTokenCostPerMillion: String(input.inputTokenCostPerMillion),
@@ -281,6 +297,21 @@ export async function platformRoutes(app: FastifyInstance) {
         .returning({ id: platformLlmProviders.id });
       return updated;
     });
+  });
+
+  app.post('/api/platform/ai/providers/:id/test', async (request) => {
+    requirePlatformAdmin(request);
+    const { id } = idParam.parse(request.params);
+    const provider = await withPlatformScope(async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(platformLlmProviders)
+        .where(eq(platformLlmProviders.id, id))
+        .limit(1);
+      if (!row) throw notFound('Provider not found');
+      return providerConfig(row);
+    });
+    return probeProvider(provider);
   });
 
   app.delete('/api/platform/ai/providers/:id', async (request) => {

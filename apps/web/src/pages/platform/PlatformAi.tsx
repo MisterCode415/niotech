@@ -1,8 +1,13 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { DEFAULT_AI_DISCLAIMER } from '@nio/shared';
-import { api } from '../../lib/api';
+import {
+  DEFAULT_AI_DISCLAIMER,
+  GEMINI_OPENAI_COMPATIBLE_URL,
+  isNativeGeminiUrl,
+  type LlmAuthStyle,
+} from '@nio/shared';
+import { api, ApiError } from '../../lib/api';
 import { Alert, Field, Loading } from '../../components/ui';
 
 interface Provider {
@@ -11,6 +16,8 @@ interface Provider {
   apiUrl: string;
   apiKeyMasked: string;
   hasApiKey: boolean;
+  authStyle: LlmAuthStyle;
+  authHeaderName: string | null;
   model: string;
   customHeaders: Array<{ name: string; value: string }>;
   inputTokenCostPerMillion: number;
@@ -23,10 +30,21 @@ interface Provider {
   phiApprovalNote: string | null;
 }
 
+interface ProbeResult {
+  ok: boolean;
+  status: number;
+  latencyMs: number;
+  endpoint: string;
+  detail: string;
+  reply: string;
+}
+
 interface FormState {
   name: string;
   apiUrl: string;
   apiKey: string;
+  authStyle: LlmAuthStyle;
+  authHeaderName: string;
   model: string;
   customHeaders: Array<{ name: string; value: string }>;
   inputTokenCostPerMillion: number;
@@ -41,6 +59,8 @@ const emptyForm = (): FormState => ({
   name: '',
   apiUrl: '',
   apiKey: '',
+  authStyle: 'bearer',
+  authHeaderName: '',
   model: '',
   customHeaders: [{ name: '', value: '' }],
   inputTokenCostPerMillion: 0,
@@ -51,12 +71,34 @@ const emptyForm = (): FormState => ({
   phiApprovalNote: '',
 });
 
+/** First field message from a zod `treeifyError` payload, so admins see why a save failed. */
+function firstIssue(node: unknown): string | null {
+  if (!node || typeof node !== 'object') return null;
+  const { errors, properties, items } = node as {
+    errors?: unknown;
+    properties?: Record<string, unknown>;
+    items?: unknown[];
+  };
+  if (Array.isArray(errors) && typeof errors[0] === 'string') return errors[0];
+  for (const child of [...Object.values(properties ?? {}), ...(items ?? [])]) {
+    const found = firstIssue(child);
+    if (found) return found;
+  }
+  return null;
+}
+
+function errorText(err: Error): string {
+  return (err instanceof ApiError && firstIssue(err.details)) || err.message;
+}
+
 export function PlatformAi() {
   const queryClient = useQueryClient();
   const [railsPrompt, setRailsPrompt] = useState('');
   const [disclaimer, setDisclaimer] = useState(DEFAULT_AI_DISCLAIMER);
+  const [perReportBudgetUsd, setPerReportBudgetUsd] = useState(5);
   const [form, setForm] = useState<FormState>(emptyForm);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [probes, setProbes] = useState<Record<string, ProbeResult>>({});
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
@@ -64,11 +106,12 @@ export function PlatformAi() {
     queryKey: ['platform', 'ai'],
     queryFn: async () => {
       const data = await api<{
-        settings: { railsPrompt: string; disclaimer: string };
+        settings: { railsPrompt: string; disclaimer: string; perReportBudgetUsd: number };
         providers: Provider[];
       }>('/api/platform/ai');
       setRailsPrompt(data.settings.railsPrompt);
       setDisclaimer(data.settings.disclaimer);
+      setPerReportBudgetUsd(data.settings.perReportBudgetUsd);
       return data;
     },
   });
@@ -81,15 +124,19 @@ export function PlatformAi() {
 
   const saveSettings = useMutation({
     mutationFn: () =>
-      api('/api/platform/ai/settings', { method: 'PUT', body: { railsPrompt, disclaimer } }),
-    onSuccess: () => ok('Platform rails saved.'),
-    onError: (err: Error) => setError(err.message),
+      api('/api/platform/ai/settings', {
+        method: 'PUT',
+        body: { railsPrompt, disclaimer, perReportBudgetUsd },
+      }),
+    onSuccess: () => ok('Platform settings saved.'),
+    onError: (err: Error) => setError(errorText(err)),
   });
 
   const saveProvider = useMutation({
     mutationFn: () => {
       const body = {
         ...form,
+        authHeaderName: form.authStyle === 'header' ? form.authHeaderName.trim() : undefined,
         customHeaders: form.customHeaders.filter((header) => header.name.trim()),
         apiKey: form.apiKey || undefined,
       };
@@ -102,7 +149,14 @@ export function PlatformAi() {
       setEditingId(null);
       ok(editingId ? 'Provider updated.' : 'Provider added.');
     },
-    onError: (err: Error) => setError(err.message),
+    onError: (err: Error) => setError(errorText(err)),
+  });
+
+  const probe = useMutation({
+    mutationFn: (id: string) =>
+      api<ProbeResult>(`/api/platform/ai/providers/${id}/test`, { method: 'POST' }),
+    onSuccess: (result, id) => setProbes((current) => ({ ...current, [id]: result })),
+    onError: (err: Error) => setError(errorText(err)),
   });
 
   const remove = useMutation({
@@ -166,8 +220,21 @@ export function PlatformAi() {
             rows={3}
           />
         </Field>
+        <Field label="Per-report AI limit ($)">
+          <input
+            type="number"
+            min={0}
+            step="0.5"
+            value={perReportBudgetUsd}
+            onChange={(event) => setPerReportBudgetUsd(Number(event.target.value))}
+          />
+        </Field>
+        <p className="small muted" style={{ margin: '-4px 0 12px' }}>
+          AI spend included with each order's report. Once a report's conversations reach it, the
+          patient sees an out-of-credits notice instead of the chat box.
+        </p>
         <button className="primary" onClick={() => saveSettings.mutate()} disabled={saveSettings.isPending}>
-          Save rails
+          Save settings
         </button>
       </div>
 
@@ -196,8 +263,20 @@ export function PlatformAi() {
                         }${provider.phiApprovalNote ? ` · ${provider.phiApprovalNote}` : ''}`
                       : 'Not approved for PHI: skipped by production chat'}
                   </div>
+                  {provider.inputTokenCostPerMillion === 0 && provider.outputTokenCostPerMillion === 0 ? (
+                    <div className="small" style={{ color: 'var(--warn)' }}>
+                      Token prices are $0, so this provider's usage never counts toward the per-report limit.
+                    </div>
+                  ) : null}
+                  {probes[provider.id] ? <ProbeLine result={probes[provider.id]!} /> : null}
                 </div>
                 <div className="row">
+                  <button
+                    onClick={() => probe.mutate(provider.id)}
+                    disabled={probe.isPending && probe.variables === provider.id}
+                  >
+                    {probe.isPending && probe.variables === provider.id ? 'Testing…' : 'Test'}
+                  </button>
                   <button onClick={() => move(index, -1)} disabled={index === 0}>
                     Up
                   </button>
@@ -211,6 +290,8 @@ export function PlatformAi() {
                         name: provider.name,
                         apiUrl: provider.apiUrl,
                         apiKey: '',
+                        authStyle: provider.authStyle,
+                        authHeaderName: provider.authHeaderName ?? '',
                         model: provider.model,
                         customHeaders:
                           provider.customHeaders.length > 0
@@ -249,6 +330,15 @@ export function PlatformAi() {
             placeholder="https://api.openai.com/v1"
           />
         </Field>
+        <p className="small muted" style={{ margin: '-4px 0 12px' }}>
+          Requests use the OpenAI chat-completions format. For Gemini use{' '}
+          <span className="mono">{GEMINI_OPENAI_COMPATIBLE_URL}</span>.
+        </p>
+        {isNativeGeminiUrl(form.apiUrl) ? (
+          <Alert tone="error">
+            {`This is Google's native Gemini URL. Use ${GEMINI_OPENAI_COMPATIBLE_URL} instead.`}
+          </Alert>
+        ) : null}
         <Field label="Model">
           <input
             value={form.model}
@@ -263,6 +353,26 @@ export function PlatformAi() {
             onChange={(event) => setForm({ ...form, apiKey: event.target.value })}
           />
         </Field>
+        <div className="field-row">
+          <Field label="Send API key as">
+            <select
+              value={form.authStyle}
+              onChange={(event) => setForm({ ...form, authStyle: event.target.value as LlmAuthStyle })}
+            >
+              <option value="bearer">Authorization: Bearer header</option>
+              <option value="header">Custom header</option>
+            </select>
+          </Field>
+          {form.authStyle === 'header' ? (
+            <Field label="Header name">
+              <input
+                value={form.authHeaderName}
+                onChange={(event) => setForm({ ...form, authHeaderName: event.target.value })}
+                placeholder="x-goog-api-key"
+              />
+            </Field>
+          ) : null}
+        </div>
         <div className="field-row">
           <Field label="Input $ / 1M tokens">
             <input
@@ -324,6 +434,9 @@ export function PlatformAi() {
             </button>
           </div>
         </Field>
+        <p className="small muted" style={{ margin: '-4px 0 12px' }}>
+          Stored unencrypted. Do not put keys or secrets here.
+        </p>
         <label className="small">
           <input
             type="checkbox"
@@ -357,7 +470,14 @@ export function PlatformAi() {
           <button
             className="primary"
             onClick={() => saveProvider.mutate()}
-            disabled={saveProvider.isPending || !form.name || !form.apiUrl || !form.model}
+            disabled={
+              saveProvider.isPending ||
+              !form.name ||
+              !form.apiUrl ||
+              !form.model ||
+              isNativeGeminiUrl(form.apiUrl) ||
+              (form.authStyle === 'header' && !form.authHeaderName.trim())
+            }
           >
             {editingId ? 'Update provider' : 'Add provider'}
           </button>
@@ -374,5 +494,19 @@ export function PlatformAi() {
         </div>
       </div>
     </>
+  );
+}
+
+function ProbeLine({ result }: { result: ProbeResult }) {
+  const where = result.endpoint ? ` · ${result.endpoint}` : '';
+  return result.ok ? (
+    <div className="small" style={{ color: 'var(--success)' }}>
+      Connected in {result.latencyMs} ms{where} · replied “{result.reply}”
+    </div>
+  ) : (
+    <div className="small" style={{ color: 'var(--danger)', wordBreak: 'break-word' }}>
+      Failed{result.status ? ` (${result.status})` : ''} in {result.latencyMs} ms{where}
+      {result.detail ? ` · ${result.detail}` : ''}
+    </div>
   );
 }

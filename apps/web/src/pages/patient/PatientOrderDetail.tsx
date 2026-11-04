@@ -199,6 +199,13 @@ export function PatientOrderDetail() {
               </>
             )}
           </div>
+
+          {released ? (
+            <div className="card">
+              <div className="card-title">Discuss your results</div>
+              <ReportChat base={base} orderId={orderId} />
+            </div>
+          ) : null}
         </div>
 
         <div className="stack">
@@ -227,13 +234,6 @@ export function PatientOrderDetail() {
             <div className="card-title">Progress</div>
             <Timeline events={data.events} />
           </div>
-
-          {released ? (
-            <div className="card">
-              <div className="card-title">Discuss your results</div>
-              <ReportChat base={base} orderId={orderId} />
-            </div>
-          ) : null}
         </div>
       </div>
 

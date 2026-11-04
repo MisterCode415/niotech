@@ -25,6 +25,7 @@ import {
   SHIPPING_METHODS,
   ORDER_ISSUE_REASONS,
   CLINICIAN_DECISIONS,
+  LLM_AUTH_STYLES,
   type Address,
   type BusinessUnitBrand,
   type CheckoutAttribution,
@@ -77,6 +78,7 @@ export const catalogSyncStatusEnum = pgEnum('catalog_sync_status', [
 ]);
 export const fileExtractionMethodEnum = pgEnum('file_extraction_method', ['pdf_text', 'ocr']);
 export const reportMessageRoleEnum = pgEnum('report_message_role', ['user', 'assistant']);
+export const llmAuthStyleEnum = pgEnum('llm_auth_style', LLM_AUTH_STYLES);
 export const PHI_RESOURCE_TYPES = [
   'order_detail',
   'result_file',
@@ -806,6 +808,10 @@ export const platformAiSettings = pgTable('platform_ai_settings', {
   id: uuid('id').primaryKey().defaultRandom(),
   railsPrompt: text('rails_prompt').notNull().default(''),
   disclaimer: text('disclaimer').notNull(),
+  /** AI spend included with one order's report; requests past it are refused. */
+  perReportBudgetUsd: numeric('per_report_budget_usd', { precision: 10, scale: 2 })
+    .notNull()
+    .default('5.00'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -816,6 +822,9 @@ export const platformLlmProviders = pgTable(
     name: text('name').notNull(),
     apiUrl: text('api_url').notNull(),
     apiKeyCiphertext: text('api_key_ciphertext').notNull().default(''),
+    authStyle: llmAuthStyleEnum('auth_style').notNull().default('bearer'),
+    /** Header that carries the key when `authStyle` is `header`, e.g. x-goog-api-key. */
+    authHeaderName: text('auth_header_name'),
     model: text('model').notNull(),
     customHeaders: jsonb('custom_headers').$type<Array<{ name: string; value: string }>>().notNull().default([]),
     inputTokenCostPerMillion: numeric('input_token_cost_per_million', {
@@ -899,6 +908,10 @@ export const reportMessages = pgTable(
     }),
     inputTokens: integer('input_tokens').notNull().default(0),
     outputTokens: integer('output_tokens').notNull().default(0),
+    /** Cost of the whole turn, on the assistant row; summed per order against the allowance. */
+    estimatedCostUsd: numeric('estimated_cost_usd', { precision: 14, scale: 8 })
+      .notNull()
+      .default('0'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('report_messages_conversation_idx').on(t.conversationId, t.createdAt)],

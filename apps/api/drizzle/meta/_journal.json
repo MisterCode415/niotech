@@ -127,6 +127,13 @@
       "when": 1789425000000,
       "tag": "0017_report_threads",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1789426800000,
+      "tag": "0018_report_budget",
+      "breakpoints": true
     }
   ]
 }

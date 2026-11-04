@@ -12,9 +12,10 @@ import {
 } from '../db/schema.js';
 import { decryptSecret } from '../lib/secrets.js';
 import { decryptPhi, encryptPhi } from '../lib/phiCrypto.js';
-import { badRequest, notFound } from '../lib/errors.js';
+import { badRequest, HttpError, notFound } from '../lib/errors.js';
 import {
   completeWithCascade,
+  tokenCostUsd,
   type ChatCompletionResult,
   type ChatMessage,
   type LlmProviderConfig,
@@ -35,15 +36,14 @@ function parseYesNo(content: string): boolean {
   return normalized === 'yes' || normalized.startsWith('yes');
 }
 
-function estimatedCostUsd(
-  inputTokens: number,
-  outputTokens: number,
-  inputPerMillion: string,
-  outputPerMillion: string,
-): number {
-  const input = Number(inputPerMillion) || 0;
-  const output = Number(outputPerMillion) || 0;
-  return (inputTokens / 1_000_000) * input + (outputTokens / 1_000_000) * output;
+/** Rough characters-per-token used to price a request before it is sent. */
+const CHARS_PER_TOKEN = 4;
+const QUALIFIER_MAX_TOKENS = 256;
+
+export const OUT_OF_CREDITS_MESSAGE = "You've used the AI allowance included with this report.";
+
+function outOfCredits(): HttpError {
+  return new HttpError(402, OUT_OF_CREDITS_MESSAGE, 'OUT_OF_CREDITS');
 }
 
 /**
@@ -57,6 +57,22 @@ export function eligibleProviderRows<T extends { phiApproved: boolean }>(
   return nodeEnv === 'production' ? rows.filter((row) => row.phiApproved) : rows;
 }
 
+export function providerConfig(row: typeof platformLlmProviders.$inferSelect): LlmProviderConfig {
+  return {
+    id: row.id,
+    name: row.name,
+    apiUrl: row.apiUrl,
+    apiKey: decryptSecret(row.apiKeyCiphertext),
+    authStyle: row.authStyle,
+    authHeaderName: row.authHeaderName,
+    model: row.model,
+    customHeaders: row.customHeaders ?? [],
+    maxOutputTokens: row.maxOutputTokens,
+    inputCostPerMillion: Number(row.inputTokenCostPerMillion) || 0,
+    outputCostPerMillion: Number(row.outputTokenCostPerMillion) || 0,
+  };
+}
+
 export async function loadEnabledProviders(tx: Tx): Promise<LlmProviderConfig[]> {
   const rows = await tx
     .select()
@@ -64,16 +80,48 @@ export async function loadEnabledProviders(tx: Tx): Promise<LlmProviderConfig[]>
     .where(eq(platformLlmProviders.enabled, true))
     .orderBy(asc(platformLlmProviders.sortOrder));
   return eligibleProviderRows(rows)
-    .map((row) => ({
-      id: row.id,
-      name: row.name,
-      apiUrl: row.apiUrl,
-      apiKey: decryptSecret(row.apiKeyCiphertext),
-      model: row.model,
-      customHeaders: row.customHeaders ?? [],
-      maxOutputTokens: row.maxOutputTokens,
-    }))
+    .map(providerConfig)
     .filter((row) => row.apiUrl && row.apiKey);
+}
+
+/** Everything spent on this order's report, archived threads included, so archiving cannot reset it. */
+export async function orderSpendUsd(tx: Tx, orderId: string): Promise<number> {
+  const [row] = await tx
+    .select({ total: sql<string>`coalesce(sum(${reportMessages.estimatedCostUsd}), 0)` })
+    .from(reportMessages)
+    .innerJoin(reportConversations, eq(reportConversations.id, reportMessages.conversationId))
+    .where(eq(reportConversations.orderId, orderId));
+  return Number(row?.total ?? 0);
+}
+
+/**
+ * Upper bound for one turn, priced at the most expensive provider that could end up answering:
+ * the on-topic check plus the full answer, with every reply assumed to run to its token cap.
+ */
+export function estimateTurnCostUsd(
+  providers: LlmProviderConfig[],
+  qualifierMessages: ChatMessage[],
+  analysisMessages: ChatMessage[],
+): number {
+  const tokens = (messages: ChatMessage[]) =>
+    Math.ceil(messages.reduce((sum, message) => sum + message.content.length, 0) / CHARS_PER_TOKEN);
+  const qualifierIn = tokens(qualifierMessages);
+  const analysisIn = tokens(analysisMessages);
+  return Math.max(
+    0,
+    ...providers.map(
+      (provider) =>
+        tokenCostUsd(provider, qualifierIn, QUALIFIER_MAX_TOKENS) +
+        tokenCostUsd(provider, analysisIn, provider.maxOutputTokens),
+    ),
+  );
+}
+
+export async function orderCredits(tx: Tx, orderId: string) {
+  const settings = await loadPlatformAiSettings(tx);
+  const budget = Number(settings.perReportBudgetUsd) || 0;
+  const spent = await orderSpendUsd(tx, orderId);
+  return { budget, spent, exhausted: budget <= 0 || spent >= budget };
 }
 
 export async function fileIdsForOrder(tx: Tx, orderId: string): Promise<string[]> {
@@ -102,10 +150,15 @@ export function trimHistory(messages: ChatMessage[], charBudget = HISTORY_CHAR_B
   return kept;
 }
 
-export async function chatAvailability(tx: Tx) {
+export async function chatAvailability(tx: Tx, orderId: string) {
   const settings = await loadPlatformAiSettings(tx);
   const providers = await loadEnabledProviders(tx);
-  return { enabled: providers.length > 0, disclaimer: settings.disclaimer };
+  const credits = await orderCredits(tx, orderId);
+  return {
+    enabled: providers.length > 0,
+    disclaimer: settings.disclaimer,
+    credits: { exhausted: credits.exhausted },
+  };
 }
 
 export async function listThreads(tx: Tx, orderId: string) {
@@ -227,6 +280,7 @@ export async function prepareReportChat(
   tx: Tx,
   params: {
     businessUnitId: string;
+    orderId: string;
     threadId: string | null;
     prompt: string;
     fileIds: string[];
@@ -244,6 +298,8 @@ export async function prepareReportChat(
   if (providers.length === 0) {
     throw badRequest('Report discussion is not configured yet.', 'AI_DISABLED');
   }
+  const credits = await orderCredits(tx, params.orderId);
+  if (credits.exhausted) throw outOfCredits();
 
   const [buSettings] = await tx
     .select({ railsPrompt: businessUnitAiSettings.railsPrompt })
@@ -281,27 +337,27 @@ export async function prepareReportChat(
     platformRails: settings.railsPrompt,
   });
 
-  return {
-    providers,
-    disclaimer: settings.disclaimer,
-    qualifierMessages: [
-      {
-        role: 'system',
-        content:
-          "Answer only yes or no. Is this user's question regarding their health report? " +
-          'A short follow-up to the previous answer about the report counts as yes. Answer only yes or no.',
-      },
-      ...(lastReply
-        ? [{ role: 'assistant' as const, content: lastReply.content.slice(0, 2000) }]
-        : []),
-      { role: 'user', content: params.prompt },
-    ],
-    analysisMessages: [
-      { role: 'system', content: system },
-      ...history,
-      { role: 'user', content: params.prompt },
-    ],
-  };
+  const qualifierMessages: ChatMessage[] = [
+    {
+      role: 'system',
+      content:
+        "Answer only yes or no. Is this user's question regarding their health report? " +
+        'A short follow-up to the previous answer about the report counts as yes. Answer only yes or no.',
+    },
+    ...(lastReply ? [{ role: 'assistant' as const, content: lastReply.content.slice(0, 2000) }] : []),
+    { role: 'user', content: params.prompt },
+  ];
+  const analysisMessages: ChatMessage[] = [
+    { role: 'system', content: system },
+    ...history,
+    { role: 'user', content: params.prompt },
+  ];
+
+  if (credits.spent + estimateTurnCostUsd(providers, qualifierMessages, analysisMessages) > credits.budget) {
+    throw outOfCredits();
+  }
+
+  return { providers, disclaimer: settings.disclaimer, qualifierMessages, analysisMessages };
 }
 
 export async function runReportChat(prepared: {
@@ -310,7 +366,8 @@ export async function runReportChat(prepared: {
   analysisMessages: ChatMessage[];
 }): Promise<{ qualifier: ChatCompletionResult; completion: ChatCompletionResult }> {
   const qualifier = await completeWithCascade(prepared.providers, prepared.qualifierMessages, {
-    maxTokens: 8,
+    // Reasoning models spend tokens before answering; a tiny cap comes back empty.
+    maxTokens: QUALIFIER_MAX_TOKENS,
   });
   if (!parseYesNo(qualifier.content)) {
     throw badRequest('Questions must be about this health report.', 'OFF_TOPIC');
@@ -345,6 +402,10 @@ export async function persistReportChat(
           .returning({ id: reportConversations.id })
       )[0]!.id;
 
+  const addIn = params.qualifier.inputTokens + params.completion.inputTokens;
+  const addOut = params.qualifier.outputTokens + params.completion.outputTokens;
+  const addCost = (params.qualifier.costUsd + params.completion.costUsd).toFixed(8);
+
   // Distinct timestamps keep the question ahead of its answer when replayed in order.
   const askedAt = new Date();
   const answeredAt = new Date(askedAt.getTime() + 1);
@@ -362,8 +423,9 @@ export async function persistReportChat(
       role: 'assistant',
       content: encryptPhi(params.completion.content),
       providerId: params.completion.providerId,
-      inputTokens: params.qualifier.inputTokens + params.completion.inputTokens,
-      outputTokens: params.qualifier.outputTokens + params.completion.outputTokens,
+      inputTokens: addIn,
+      outputTokens: addOut,
+      estimatedCostUsd: addCost,
       createdAt: answeredAt,
     },
   ]);
@@ -373,24 +435,6 @@ export async function persistReportChat(
     .set({ updatedAt: answeredAt })
     .where(eq(reportConversations.id, threadId));
 
-  const [providerRow] = await tx
-    .select({
-      input: platformLlmProviders.inputTokenCostPerMillion,
-      output: platformLlmProviders.outputTokenCostPerMillion,
-    })
-    .from(platformLlmProviders)
-    .where(eq(platformLlmProviders.id, params.completion.providerId))
-    .limit(1);
-
-  const addIn = params.qualifier.inputTokens + params.completion.inputTokens;
-  const addOut = params.qualifier.outputTokens + params.completion.outputTokens;
-  const addCost = estimatedCostUsd(
-    addIn,
-    addOut,
-    providerRow?.input ?? '0',
-    providerRow?.output ?? '0',
-  );
-
   await tx
     .insert(patientLlmUsage)
     .values({
@@ -398,14 +442,14 @@ export async function persistReportChat(
       patientUserId: params.patientUserId,
       inputTokens: addIn,
       outputTokens: addOut,
-      estimatedCostUsd: addCost.toFixed(8),
+      estimatedCostUsd: addCost,
     })
     .onConflictDoUpdate({
       target: [patientLlmUsage.businessUnitId, patientLlmUsage.patientUserId],
       set: {
         inputTokens: sql`${patientLlmUsage.inputTokens} + ${addIn}`,
         outputTokens: sql`${patientLlmUsage.outputTokens} + ${addOut}`,
-        estimatedCostUsd: sql`${patientLlmUsage.estimatedCostUsd} + ${addCost.toFixed(8)}`,
+        estimatedCostUsd: sql`${patientLlmUsage.estimatedCostUsd} + ${addCost}`,
         updatedAt: new Date(),
       },
     });

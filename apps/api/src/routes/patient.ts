@@ -324,7 +324,7 @@ export async function patientRoutes(app: FastifyInstance) {
     const ctx = requireMembership(request, slug, ['patient']);
     return withTenant(ctx, async (tx) => {
       await releasedOrderFor(tx, ctx, orderId);
-      const availability = await chatAvailability(tx);
+      const availability = await chatAvailability(tx, orderId);
       const threads = await listThreads(tx, orderId);
       await recordPhiAccess(tx, request, ctx, {
         resourceType: 'conversation',
@@ -382,6 +382,7 @@ export async function patientRoutes(app: FastifyInstance) {
       });
       return prepareReportChat(tx, {
         businessUnitId: ctx.businessUnitId,
+        orderId,
         threadId,
         prompt: input.prompt,
         fileIds,

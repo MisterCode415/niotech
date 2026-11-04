@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { DEFAULT_AI_DISCLAIMER } from '@nio/shared';
 import { buildApp } from '../app.js';
 import { closeDb, withPlatformScope } from '../db/client.js';
@@ -13,7 +13,13 @@ import {
   reportMessages,
 } from '../db/schema.js';
 import { decryptPhi, encryptPhi, isEncryptedPhi } from '../lib/phiCrypto.js';
-import { eligibleProviderRows, threadTitle, trimHistory } from '../services/reportChat.js';
+import {
+  eligibleProviderRows,
+  estimateTurnCostUsd,
+  threadTitle,
+  trimHistory,
+} from '../services/reportChat.js';
+import { chatCompletionsUrl, providerRequestHeaders, type LlmProviderConfig } from '../services/ai.js';
 import {
   call,
   login,
@@ -29,7 +35,10 @@ const tokens: Record<string, string> = {};
 let mockServer: Server;
 let mockPort = 0;
 let failFirst = false;
+let failAll = false;
+let emptyReplies = false;
 let lastBodies: Array<{ messages?: Array<{ role: string; content: string }> }> = [];
+let lastHeaders: IncomingMessage['headers'][] = [];
 
 function readBody(request: IncomingMessage): Promise<string> {
   return new Promise((resolve) => {
@@ -48,21 +57,24 @@ beforeAll(async () => {
   mockServer = createServer(async (request, response) => {
     const body = JSON.parse((await readBody(request)) || '{}') as (typeof lastBodies)[number];
     lastBodies.push(body);
+    lastHeaders.push(request.headers);
     const last = body.messages?.at(-1)?.content ?? '';
 
-    if (failFirst) {
+    if (failFirst || failAll) {
       failFirst = false;
       response.statusCode = 500;
-      response.end(JSON.stringify({ error: 'upstream' }));
+      response.end(JSON.stringify({ error: 'upstream exploded' }));
       return;
     }
 
     response.setHeader('content-type', 'application/json');
-    const content = isQualifierBody(body)
-      ? last.toLowerCase().includes('weather')
-        ? 'no'
-        : 'yes'
-      : 'Glucose is within the reference range on this report.';
+    const content = emptyReplies
+      ? ''
+      : isQualifierBody(body)
+        ? last.toLowerCase().includes('weather')
+          ? 'no'
+          : 'yes'
+        : 'Glucose is within the reference range on this report.';
     response.end(
       JSON.stringify({
         choices: [{ message: { content } }],
@@ -144,6 +156,8 @@ describe('report AI', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    failAll = false;
+    emptyReplies = false;
   });
 
   it('extracts when the lab completes the kit and stores the text encrypted', async () => {
@@ -425,6 +439,290 @@ describe('report AI', () => {
     const { orderId } = await releaseDirectOrder(TEXT_PDF);
     const reply = await startThread(orderId, 'Summarize my report');
     expect(reply.reply).toContain('Glucose');
+  });
+
+  it('records the cost of each turn on the assistant message', async () => {
+    await seedProvider('cost');
+    const { orderId } = await releaseDirectOrder(TEXT_PDF);
+    const { threadId } = await startThread(orderId, 'What does my glucose result mean?');
+    const rows = await withPlatformScope((tx) =>
+      tx.select().from(reportMessages).where(eq(reportMessages.conversationId, threadId)),
+    );
+    const assistant = rows.find((row) => row.role === 'assistant')!;
+    // Qualifier and answer each report 20 in / 8 out at $1 and $2 per million.
+    expect(Number(assistant.estimatedCostUsd)).toBeCloseTo((2 * (20 * 1 + 8 * 2)) / 1_000_000, 10);
+    expect(Number(rows.find((row) => row.role === 'user')!.estimatedCostUsd)).toBe(0);
+  });
+
+  it('refuses with OUT_OF_CREDITS once the report allowance is spent, archived threads included', async () => {
+    await seedProvider('budget');
+    const { orderId } = await releaseDirectOrder(TEXT_PDF);
+    const { threadId } = await startThread(orderId, 'What does my glucose result mean?');
+
+    const before = await call<{ credits: { exhausted: boolean } }>(app, {
+      method: 'GET',
+      url: threadsUrl(orderId),
+      token: tokens.patient!,
+    });
+    expect(before.credits.exhausted).toBe(false);
+
+    await withPlatformScope((tx) =>
+      tx
+        .update(reportMessages)
+        .set({ estimatedCostUsd: '5.00000000' })
+        .where(and(eq(reportMessages.conversationId, threadId), eq(reportMessages.role, 'assistant'))),
+    );
+    await call(app, { method: 'DELETE', url: `${threadsUrl(orderId)}/${threadId}`, token: tokens.patient! });
+
+    const after = await call<{ credits: { exhausted: boolean }; threads: unknown[] }>(app, {
+      method: 'GET',
+      url: threadsUrl(orderId),
+      token: tokens.patient!,
+    });
+    expect(after.threads).toHaveLength(0);
+    expect(after.credits.exhausted).toBe(true);
+
+    lastBodies = [];
+    const refused = await app.inject({
+      method: 'POST',
+      url: threadsUrl(orderId),
+      headers: auth(tokens.patient!),
+      payload: { prompt: 'Summarize my report' },
+    });
+    expect(refused.statusCode).toBe(402);
+    expect(refused.json()).toMatchObject({
+      code: 'OUT_OF_CREDITS',
+      error: "You've used the AI allowance included with this report.",
+    });
+    expect(lastBodies).toHaveLength(0);
+  });
+
+  it('refuses a turn whose estimate would cross the allowance before calling any provider', async () => {
+    const settingsUrl = '/api/platform/ai/settings';
+    const { settings } = await call<{
+      settings: { railsPrompt: string; disclaimer: string; perReportBudgetUsd: number };
+    }>(app, { method: 'GET', url: '/api/platform/ai', token: tokens.platform! });
+    const pricey = await call<{ id: string }>(app, {
+      method: 'POST',
+      url: '/api/platform/ai/providers',
+      token: tokens.platform!,
+      payload: {
+        name: 'Mock pricey',
+        apiUrl: `http://127.0.0.1:${mockPort}/v1`,
+        apiKey: 'sk-test-pricey',
+        model: 'mock-model',
+        inputTokenCostPerMillion: 100,
+        outputTokenCostPerMillion: 100,
+        maxOutputTokens: 128,
+      },
+      expect: 201,
+    });
+    try {
+      await call(app, {
+        method: 'PUT',
+        url: settingsUrl,
+        token: tokens.platform!,
+        payload: { ...settings, perReportBudgetUsd: 0.01 },
+      });
+      const { orderId } = await releaseDirectOrder(TEXT_PDF);
+      lastBodies = [];
+      const refused = await app.inject({
+        method: 'POST',
+        url: threadsUrl(orderId),
+        headers: auth(tokens.patient!),
+        payload: { prompt: 'Summarize my report' },
+      });
+      expect(refused.statusCode).toBe(402);
+      expect(refused.json().code).toBe('OUT_OF_CREDITS');
+      expect(lastBodies).toHaveLength(0);
+    } finally {
+      await call(app, { method: 'PUT', url: settingsUrl, token: tokens.platform!, payload: settings });
+      await call(app, {
+        method: 'DELETE',
+        url: `/api/platform/ai/providers/${pricey.id}`,
+        token: tokens.platform!,
+      });
+    }
+  });
+
+  it('returns 502 AI_PROVIDER_ERROR and logs the provider response when every provider fails', async () => {
+    await seedProvider('down');
+    const { orderId } = await releaseDirectOrder(TEXT_PDF);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    failAll = true;
+    const failed = await app.inject({
+      method: 'POST',
+      url: threadsUrl(orderId),
+      headers: auth(tokens.patient!),
+      payload: { prompt: 'What does my glucose result mean?' },
+    });
+    expect(failed.statusCode).toBe(502);
+    expect(failed.json()).toMatchObject({
+      code: 'AI_PROVIDER_ERROR',
+      error: 'The AI service could not answer right now. Please try again.',
+    });
+    const logged = warn.mock.calls.map((args) => String(args[0])).join('\n');
+    expect(logged).toContain('"status":500');
+    expect(logged).toContain('upstream exploded');
+    expect(logged).toContain('/v1/chat/completions');
+    expect(logged).not.toContain('glucose');
+    expect(logged).not.toContain('sk-test');
+  });
+
+  it('treats an empty on-topic reply as a provider error, not off-topic', async () => {
+    await seedProvider('empty');
+    const { orderId } = await releaseDirectOrder(TEXT_PDF);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    emptyReplies = true;
+    lastBodies = [];
+    const failed = await app.inject({
+      method: 'POST',
+      url: threadsUrl(orderId),
+      headers: auth(tokens.patient!),
+      payload: { prompt: 'What does my glucose result mean?' },
+    });
+    expect(failed.statusCode).toBe(502);
+    expect(failed.json().code).toBe('AI_PROVIDER_ERROR');
+    expect(lastBodies.length).toBeGreaterThan(0);
+    expect(lastBodies.every(isQualifierBody)).toBe(true);
+  });
+
+  it("rejects Google's native Gemini URL with a pointer to the OpenAI-compatible endpoint", async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/platform/ai/providers',
+      headers: auth(tokens.platform!),
+      payload: {
+        name: 'Gemini native',
+        apiUrl: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent',
+        apiKey: 'k',
+        model: 'gemini-flash-latest',
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.body).toContain('generativelanguage.googleapis.com/v1beta/openai');
+  });
+
+  it('validates header-style auth settings', async () => {
+    const base = {
+      name: 'Header auth',
+      apiUrl: `http://127.0.0.1:${mockPort}/v1`,
+      apiKey: 'k',
+      model: 'mock-model',
+      authStyle: 'header',
+    };
+    const missing = await app.inject({
+      method: 'POST',
+      url: '/api/platform/ai/providers',
+      headers: auth(tokens.platform!),
+      payload: base,
+    });
+    expect(missing.statusCode).toBe(400);
+    const duplicated = await app.inject({
+      method: 'POST',
+      url: '/api/platform/ai/providers',
+      headers: auth(tokens.platform!),
+      payload: {
+        ...base,
+        authHeaderName: 'x-goog-api-key',
+        customHeaders: [{ name: 'X-Goog-Api-Key', value: 'k' }],
+      },
+    });
+    expect(duplicated.statusCode).toBe(400);
+  });
+
+  it('tests a provider connection with header auth and reports failures with detail', async () => {
+    const { id } = await call<{ id: string }>(app, {
+      method: 'POST',
+      url: '/api/platform/ai/providers',
+      token: tokens.platform!,
+      payload: {
+        name: 'Mock header',
+        apiUrl: `http://127.0.0.1:${mockPort}/v1beta/openai`,
+        apiKey: 'sk-test-header',
+        authStyle: 'header',
+        authHeaderName: 'x-goog-api-key',
+        model: 'mock-model',
+        enabled: false,
+      },
+      expect: 201,
+    });
+    const testUrl = `/api/platform/ai/providers/${id}/test`;
+
+    lastHeaders = [];
+    lastBodies = [];
+    const ok = await call<{ ok: boolean; status: number; endpoint: string; reply: string; latencyMs: number }>(
+      app,
+      { method: 'POST', url: testUrl, token: tokens.platform! },
+    );
+    expect(ok).toMatchObject({ ok: true, status: 200, endpoint: `127.0.0.1:${mockPort}/v1beta/openai/chat/completions` });
+    expect(ok.reply).toContain('Glucose');
+    expect(lastHeaders[0]?.['x-goog-api-key']).toBe('sk-test-header');
+    expect(lastHeaders[0]?.authorization).toBeUndefined();
+    expect(JSON.stringify(lastBodies)).not.toContain('<report>');
+
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    failAll = true;
+    const failed = await call<{ ok: boolean; status: number; detail: string }>(app, {
+      method: 'POST',
+      url: testUrl,
+      token: tokens.platform!,
+    });
+    expect(failed).toMatchObject({ ok: false, status: 500 });
+    expect(failed.detail).toContain('upstream exploded');
+
+    const forbidden = await app.inject({ method: 'POST', url: testUrl, headers: auth(tokens.admin!) });
+    expect(forbidden.statusCode).toBe(403);
+
+    await call(app, { method: 'DELETE', url: `/api/platform/ai/providers/${id}`, token: tokens.platform! });
+  });
+});
+
+describe('LLM client helpers', () => {
+  it('builds the chat-completions URL from common base URLs', () => {
+    expect(chatCompletionsUrl('https://api.openai.com')).toBe('https://api.openai.com/v1/chat/completions');
+    expect(chatCompletionsUrl('https://api.openai.com/')).toBe('https://api.openai.com/v1/chat/completions');
+    expect(chatCompletionsUrl('https://api.openai.com/v1')).toBe('https://api.openai.com/v1/chat/completions');
+    expect(chatCompletionsUrl('https://api.openai.com/v1/')).toBe('https://api.openai.com/v1/chat/completions');
+    expect(chatCompletionsUrl('https://generativelanguage.googleapis.com/v1beta/openai')).toBe(
+      'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+    );
+    expect(chatCompletionsUrl('https://x.test/openai/deployments/m/chat/completions?api-version=2024-10-21')).toBe(
+      'https://x.test/openai/deployments/m/chat/completions?api-version=2024-10-21',
+    );
+  });
+
+  const provider: LlmProviderConfig = {
+    id: 'p',
+    name: 'p',
+    apiUrl: 'https://x.test/v1',
+    apiKey: 'secret',
+    authStyle: 'bearer',
+    authHeaderName: null,
+    model: 'm',
+    customHeaders: [{ name: 'x-extra', value: '1' }],
+    maxOutputTokens: 100,
+    inputCostPerMillion: 1,
+    outputCostPerMillion: 2,
+  };
+
+  it('sends the key as a bearer token or in the named header, never both', () => {
+    expect(providerRequestHeaders(provider)).toMatchObject({ authorization: 'Bearer secret', 'x-extra': '1' });
+    const header = providerRequestHeaders({ ...provider, authStyle: 'header', authHeaderName: 'x-goog-api-key' });
+    expect(header['x-goog-api-key']).toBe('secret');
+    expect(header.authorization).toBeUndefined();
+  });
+
+  it('prices a turn at the most expensive provider with replies at their cap', () => {
+    const messages = [{ role: 'user' as const, content: 'x'.repeat(4000) }];
+    const cheap = estimateTurnCostUsd([provider], messages, messages);
+    // 1000 tokens in for each call; 256 out for the check and 100 for the answer.
+    expect(cheap).toBeCloseTo((2000 * 1 + 356 * 2) / 1_000_000, 10);
+    const pricey = { ...provider, inputCostPerMillion: 10, outputCostPerMillion: 10 };
+    expect(estimateTurnCostUsd([provider, pricey], messages, messages)).toBeCloseTo(
+      (2000 * 10 + 356 * 10) / 1_000_000,
+      10,
+    );
   });
 });
 

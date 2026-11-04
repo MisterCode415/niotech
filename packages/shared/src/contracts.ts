@@ -309,21 +309,62 @@ export const llmCustomHeaderSchema = z.object({
   value: z.string().max(2000),
 });
 
-export const upsertLlmProviderSchema = z.object({
-  name: z.string().min(1).max(80),
-  apiUrl: z.url().max(2000),
-  apiKey: z.string().max(4000).optional(),
-  model: z.string().min(1).max(120),
-  customHeaders: z.array(llmCustomHeaderSchema).max(20).default([]),
-  inputTokenCostPerMillion: z.coerce.number().min(0).max(1_000_000).default(0),
-  outputTokenCostPerMillion: z.coerce.number().min(0).max(1_000_000).default(0),
-  maxOutputTokens: z.coerce.number().int().min(16).max(128_000).default(1024),
-  enabled: z.boolean().default(true),
-  /** Attests a BAA covers this vendor; production report chat skips providers without it. */
-  phiApproved: z.boolean().default(false),
-  phiApprovalNote: z.string().max(500).optional(),
-  sortOrder: z.coerce.number().int().min(0).max(10_000).optional(),
-});
+/** Google's native Gemini routes take a different request shape than the OpenAI-format client. */
+export function isNativeGeminiUrl(apiUrl: string): boolean {
+  return /:(stream)?generateContent\b/i.test(apiUrl);
+}
+
+export const GEMINI_OPENAI_COMPATIBLE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai';
+
+export const LLM_AUTH_STYLES = ['bearer', 'header'] as const;
+export type LlmAuthStyle = (typeof LLM_AUTH_STYLES)[number];
+
+/** RFC 7230 token characters, which is what Node's fetch accepts as a header name. */
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+
+export const upsertLlmProviderSchema = z
+  .object({
+    name: z.string().min(1).max(80),
+    apiUrl: z
+      .url()
+      .max(2000)
+      .refine((url) => !isNativeGeminiUrl(url), {
+        message: `Use Google's OpenAI-compatible endpoint: ${GEMINI_OPENAI_COMPATIBLE_URL}`,
+      }),
+    apiKey: z.string().max(4000).optional(),
+    /** `bearer` sends `Authorization: Bearer <key>`; `header` sends the key in `authHeaderName`. */
+    authStyle: z.enum(LLM_AUTH_STYLES).default('bearer'),
+    authHeaderName: z.string().trim().max(80).optional(),
+    model: z.string().min(1).max(120),
+    customHeaders: z.array(llmCustomHeaderSchema).max(20).default([]),
+    inputTokenCostPerMillion: z.coerce.number().min(0).max(1_000_000).default(0),
+    outputTokenCostPerMillion: z.coerce.number().min(0).max(1_000_000).default(0),
+    maxOutputTokens: z.coerce.number().int().min(16).max(128_000).default(1024),
+    enabled: z.boolean().default(true),
+    /** Attests a BAA covers this vendor; production report chat skips providers without it. */
+    phiApproved: z.boolean().default(false),
+    phiApprovalNote: z.string().max(500).optional(),
+    sortOrder: z.coerce.number().int().min(0).max(10_000).optional(),
+  })
+  .superRefine((input, ctx) => {
+    if (input.authStyle !== 'header') return;
+    const name = input.authHeaderName ?? '';
+    if (!HEADER_NAME.test(name)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['authHeaderName'],
+        message: 'Enter the header that carries the API key, for example x-goog-api-key',
+      });
+      return;
+    }
+    if (input.customHeaders.some((header) => header.name.trim().toLowerCase() === name.toLowerCase())) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['customHeaders'],
+        message: `Remove the "${name}" custom header; the API key is sent in it automatically`,
+      });
+    }
+  });
 
 export const reorderLlmProvidersSchema = z.object({
   orderedIds: z.array(z.uuid()).min(1),
@@ -332,6 +373,8 @@ export const reorderLlmProvidersSchema = z.object({
 export const platformAiSettingsSchema = z.object({
   railsPrompt: z.string().max(20_000),
   disclaimer: z.string().min(1).max(2000),
+  /** AI spend included with one order's report, in US dollars. */
+  perReportBudgetUsd: z.coerce.number().min(0).max(1000).default(5),
 });
 
 export const businessUnitAiSettingsSchema = z.object({
