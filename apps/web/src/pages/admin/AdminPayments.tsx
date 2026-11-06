@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../../lib/api';
 import { money } from '../../lib/format';
 import { Alert, Empty, Loading } from '../../components/ui';
@@ -49,8 +49,14 @@ interface PaymentRow {
 export function AdminPayments() {
   const { slug = '' } = useParams();
   const queryClient = useQueryClient();
-  const [message, setMessage] = useState('');
-  const [error, setError] = useState('');
+  const [searchParams] = useSearchParams();
+  const connection = searchParams.get('connection');
+  const [message, setMessage] = useState(
+    connection === 'complete' ? 'Stripe account connected. Packages were synchronized.' : '',
+  );
+  const [error, setError] = useState(
+    connection === 'cancelled' ? 'Stripe connection was cancelled.' : '',
+  );
 
   const config = useQuery({
     queryKey: ['admin', slug, 'payments-config'],
@@ -113,6 +119,8 @@ export function AdminPayments() {
   if (config.isError || ledger.isError) return <Alert tone="error">Could not load payments.</Alert>;
 
   const account = config.data!.account;
+  const connectionError =
+    connection === 'failed' ? (account?.lastSyncError ?? 'Stripe could not complete the connection.') : '';
   return (
     <>
       <div className="page-header">
@@ -124,7 +132,7 @@ export function AdminPayments() {
         </div>
       </div>
       <Alert tone="success">{message}</Alert>
-      <Alert tone="error">{error}</Alert>
+      <Alert tone="error">{error || connectionError}</Alert>
       {config.data!.provider !== 'stripe' && (
         <Alert tone="error">
           PAYMENT_PROVIDER is {config.data!.provider}. Checkout never creates a Stripe object, so
@@ -157,6 +165,9 @@ export function AdminPayments() {
                 {account.disabledReason ? ` · ${account.disabledReason}` : ''}
               </p>
             )}
+            {account?.lastSyncError && connection !== 'failed' ? (
+              <p className="small muted">Last error: {account.lastSyncError}</p>
+            ) : null}
           </div>
           <div>
             {!account?.accountId ? (
@@ -182,7 +193,15 @@ export function AdminPayments() {
                   </a>
                 )}
                 <button
-                  onClick={() => disconnect.mutate()}
+                  onClick={() => {
+                    if (
+                      window.confirm(
+                        'Disconnect this Stripe account? Checkout stops until you reconnect, and Stripe revokes this platform’s access.',
+                      )
+                    ) {
+                      disconnect.mutate();
+                    }
+                  }}
                   disabled={disconnect.isPending}
                   style={{ marginLeft: 8 }}
                 >

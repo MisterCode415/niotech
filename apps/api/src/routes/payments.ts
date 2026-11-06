@@ -157,25 +157,43 @@ export async function paymentRoutes(app: FastifyInstance) {
     if (!record || !record.expiresAt || record.expiresAt.getTime() < Date.now()) {
       throw badRequest('Stripe connection state is invalid or expired');
     }
-    if (query.error || !query.code) {
-      await withPlatformScope((tx) =>
+    const paymentsPage = `${env.WEB_ORIGIN}${workspacePath(record.slug, 'bu_admin', '/payments')}`;
+    const abandon = (lastSyncError: string) =>
+      withPlatformScope((tx) =>
         tx
           .update(paymentAccounts)
           .set({
             status: 'disconnected',
             oauthStateHash: null,
             oauthStateExpiresAt: null,
-            lastSyncError: 'Stripe authorization was cancelled',
+            lastSyncError,
             updatedAt: new Date(),
           })
           .where(eq(paymentAccounts.id, record.id)),
       );
-      return reply.redirect(
-        `${env.WEB_ORIGIN}${workspacePath(record.slug, 'bu_admin', '/payments')}?connection=cancelled`,
-      );
+
+    if (query.error || !query.code) {
+      await abandon('Stripe authorization was cancelled');
+      return reply.redirect(`${paymentsPage}?connection=cancelled`);
     }
 
-    const accountId = await exchangeConnectCode(query.code);
+    let accountId: string;
+    try {
+      accountId = await exchangeConnectCode(query.code);
+    } catch (error) {
+      const stripeError = error as { type?: string; code?: string; message?: string };
+      request.log.warn(
+        {
+          businessUnitId: record.businessUnitId,
+          stripeErrorType: stripeError.type,
+          stripeErrorCode: stripeError.code,
+          stripeErrorMessage: stripeError.message?.slice(0, 300),
+        },
+        'Stripe Connect code exchange failed',
+      );
+      await abandon(`Stripe rejected the connection: ${stripeError.message ?? 'unknown error'}`.slice(0, 500));
+      return reply.redirect(`${paymentsPage}?connection=failed`);
+    }
     await withPlatformScope((tx) =>
       tx
         .update(paymentAccounts)
@@ -201,9 +219,7 @@ export async function paymentRoutes(app: FastifyInstance) {
     for (const packageId of packageIds) {
       await syncPackageCatalog(record.businessUnitId, packageId);
     }
-    return reply.redirect(
-      `${env.WEB_ORIGIN}${workspacePath(record.slug, 'bu_admin', '/payments')}?connection=complete`,
-    );
+    return reply.redirect(`${paymentsPage}?connection=complete`);
   });
 
   app.post('/api/bu/:slug/payments/disconnect', async (request, reply) => {
