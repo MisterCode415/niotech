@@ -212,7 +212,7 @@ export async function syncPackageCatalog(
         },
         {
           stripeAccount,
-          idempotencyKey: `qinio-product-${loaded.pkg.id}`,
+          idempotencyKey: `qinio-product-${stripeAccount}-${loaded.pkg.id}`,
         },
       );
       productId = product.id;
@@ -253,7 +253,7 @@ export async function syncPackageCatalog(
         {
           stripeAccount,
           idempotencyKey:
-            `qinio-price-${loaded.pkg.id}-${loaded.pkg.version}-` +
+            `qinio-price-${stripeAccount}-${loaded.pkg.id}-${loaded.pkg.version}-` +
             `${loaded.pkg.priceCents}-${env.STRIPE_CURRENCY}`,
         },
       );

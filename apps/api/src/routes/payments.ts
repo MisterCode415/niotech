@@ -3,7 +3,7 @@ import { and, desc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { workspacePath } from '@nio/shared';
 import { requireMembership } from '../auth/context.js';
-import { withPlatformScope, withTenant } from '../db/client.js';
+import { withPlatformScope, withTenant, type Tx } from '../db/client.js';
 import { env } from '../env.js';
 import { badRequest, conflict, notFound } from '../lib/errors.js';
 import {
@@ -131,6 +131,20 @@ export async function paymentRoutes(app: FastifyInstance) {
     return { url: connectAuthorizeUrl(state) };
   });
 
+  async function forgetCatalogIds(tx: Tx) {
+    await tx
+      .update(packagePaymentMappings)
+      .set({
+        providerProductId: null,
+        providerPriceId: null,
+        status: 'pending',
+        lastError: null,
+        syncedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(packagePaymentMappings.provider, 'stripe'));
+  }
+
   app.get('/api/payments/stripe/callback', async (request, reply) => {
     const query = z
       .object({
@@ -210,6 +224,9 @@ export async function paymentRoutes(app: FastifyInstance) {
     );
     await refreshConnectAccount(record.businessUnitId, accountId);
     const packageIds = await withTenant(record.businessUnitId, async (tx) => {
+      // Products and prices live on the connected account, so any IDs left from a previous
+      // account would point at objects the new account cannot see.
+      await forgetCatalogIds(tx);
       const rows = await tx.select({ id: packages.id }).from(packages);
       for (const pkg of rows) {
         await queueCatalogSync(tx, record.businessUnitId, pkg.id);
@@ -236,8 +253,8 @@ export async function paymentRoutes(app: FastifyInstance) {
       throw conflict('A Stripe account with payment history cannot be disconnected');
     }
     await disconnectConnectAccount(account.providerAccountId);
-    await withTenant(ctx, (tx) =>
-      tx
+    await withTenant(ctx, async (tx) => {
+      await tx
         .update(paymentAccounts)
         .set({
           providerAccountId: null,
@@ -245,11 +262,13 @@ export async function paymentRoutes(app: FastifyInstance) {
           chargesEnabled: false,
           payoutsEnabled: false,
           detailsSubmitted: false,
+          disabledReason: null,
           disconnectedAt: new Date(),
           updatedAt: new Date(),
         })
-        .where(eq(paymentAccounts.id, account.id)),
-    );
+        .where(eq(paymentAccounts.id, account.id));
+      await forgetCatalogIds(tx);
+    });
     return reply.status(204).send();
   });
 
