@@ -5,6 +5,15 @@ the repeatable path and the recovery commands used while bringing up the Azure d
 environment. Replace example values before running commands. Never paste credentials into this
 file, shell history, Git, CI logs, or issue trackers.
 
+Runbooks that sequence these commands:
+
+- [RUNBOOK-production.md](RUNBOOK-production.md): standing up a separate production stack.
+- [RUNBOOK-smoke-test.md](RUNBOOK-smoke-test.md): repeatable live paid-order and refund test.
+- [RUNBOOK-backup-restore.md](RUNBOOK-backup-restore.md): backups, restores, and the write-once policy.
+- [RUNBOOK-customer-onboarding.md](RUNBOOK-customer-onboarding.md): getting a business unit selling.
+- [RUNBOOK-third-party-site.md](RUNBOOK-third-party-site.md): for a customer's web developer linking
+  their site to Qinio checkout.
+
 ## Working variables
 
 Set these once per shell session. The values below describe the current Azure development stack:

@@ -5,6 +5,7 @@ import { BrandMark, useHost } from '../lib/host';
 import { useIdleLogout } from '../lib/idleLogout';
 import { useWorkspace } from '../lib/workspace';
 import { NotificationBell } from './NotificationBell';
+import { ThemeToggle } from './ThemeToggle';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 
 interface NavItem {
@@ -76,6 +77,7 @@ export function Layout() {
         </nav>
 
         <div className="topbar-right">
+          <ThemeToggle />
           <NotificationBell />
           <div className="identity" title={me?.email}>
             <div className="identity-name">

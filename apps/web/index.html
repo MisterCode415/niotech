@@ -4,6 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Qinio Platform</title>
+    <script>
+      // Applies the saved theme before first paint so dark-mode users do not see a light flash.
+      try {
+        if (localStorage.getItem('nio.theme') === 'dark') document.documentElement.dataset.theme = 'dark';
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

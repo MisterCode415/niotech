@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom';
+import { Navigate, Outlet, Route, Routes, useLocation, useParams } from 'react-router-dom';
 import { workspacePath, type MembershipRole } from '@nio/shared';
 import { ActAsSync, useAuth } from './lib/auth';
 import { BrandSync, useHost } from './lib/host';
@@ -11,6 +11,7 @@ import {
   sessionMembershipFor,
 } from './lib/workspace';
 import { Layout } from './components/Layout';
+import { ThemeToggle } from './components/ThemeToggle';
 import { Empty, Loading } from './components/ui';
 
 import { Login } from './pages/Login';
@@ -127,6 +128,16 @@ function workspaceRoute(role: MembershipRole, path: string, element: React.React
   );
 }
 
+/** Public pages have no shared header, so the theme switch floats in a corner instead. */
+function PublicShell() {
+  return (
+    <>
+      <Outlet />
+      <ThemeToggle floating />
+    </>
+  );
+}
+
 /** A custom domain has no directory page: its root is that tenant's storefront. */
 function Home() {
   const host = useHost();
@@ -139,17 +150,19 @@ export function App() {
       <ActAsSync />
       <BrandSync />
       <Routes>
-        <Route path="/" element={<Home />} />
-        <Route path="/login" element={<Login />} />
-        {/* Auth0 returns here with its authorization code. The SDK exchanges it during mount and
-            then redirects, so this is only ever on screen for a moment. */}
-        <Route path="/callback" element={<div className="centered">Signing in…</div>} />
-        <Route path="/:slug" element={<Storefront />} />
-        <Route path="/:slug/register" element={<Register />} />
-        <Route path="/:slug/buy/:packageId" element={<Buy />} />
-        {/* Pay-first checkout: public on purpose, the account is created after payment. */}
-        <Route path="/:slug/order/:packageId" element={<GuestCheckout />} />
-        <Route path="/:slug/thanks" element={<GuestThanks />} />
+        <Route element={<PublicShell />}>
+          <Route path="/" element={<Home />} />
+          <Route path="/login" element={<Login />} />
+          {/* Auth0 returns here with its authorization code. The SDK exchanges it during mount and
+              then redirects, so this is only ever on screen for a moment. */}
+          <Route path="/callback" element={<div className="centered">Signing in…</div>} />
+          <Route path="/:slug" element={<Storefront />} />
+          <Route path="/:slug/register" element={<Register />} />
+          <Route path="/:slug/buy/:packageId" element={<Buy />} />
+          {/* Pay-first checkout: public on purpose, the account is created after payment. */}
+          <Route path="/:slug/order/:packageId" element={<GuestCheckout />} />
+          <Route path="/:slug/thanks" element={<GuestThanks />} />
+        </Route>
 
         <Route
           element={

@@ -121,7 +121,7 @@ export function AdminOrders() {
                     onClick={() => setSelectedId(order.id)}
                     style={{
                       cursor: 'pointer',
-                      background: order.id === selectedId ? 'var(--row-active, #eef4ff)' : undefined,
+                      background: order.id === selectedId ? 'var(--row-active)' : undefined,
                     }}
                   >
                     <td className="mono">
